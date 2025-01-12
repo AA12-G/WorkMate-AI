@@ -31,7 +31,7 @@ func NewQdrantStore(ctx context.Context, grpcURL, httpURL, collectionName string
 		VectorsConfig: &qdrantapi.VectorsConfig{
 			Config: &qdrantapi.VectorsConfig_Params{
 				Params: &qdrantapi.VectorParams{
-					Size:     1536,
+					Size:     3072,
 					Distance: qdrantapi.Distance_Cosine,
 				},
 			},
