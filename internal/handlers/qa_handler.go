@@ -74,7 +74,7 @@ func isValidFileType(ext string) bool {
 // Query 处理问答请求，支持流式响应
 func (h *QAHandler) Query(c *gin.Context) {
 	var req QueryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

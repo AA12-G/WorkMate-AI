@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"your-project/config"
 	"your-project/internal/handlers"
 	"your-project/internal/services"
@@ -29,8 +30,31 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
 
+	// 添加 CORS 中间件
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
+
 	// 静态文件服务
+	r.Static("/static", "./static")
 	r.Static("/uploads", "./file/upload")
+
+	// 处理 favicon.ico 请求
+	r.GET("/favicon.ico", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	// 添加根路由重定向到 index.html
+	r.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "/static/index.html")
+	})
 
 	// API路由
 	api := r.Group("/api")

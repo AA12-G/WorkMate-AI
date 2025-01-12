@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 	"your-project/config"
 	"your-project/pkg/vectorstore"
 
@@ -160,7 +161,7 @@ func (s *QAService) StreamingQuery(ctx context.Context, question string, respons
 			return
 		}
 
-		// 按字符发送响应，模拟流式输出
+		// 按字符发送，实现打字机效果
 		runes := []rune(answer)
 		for i := 0; i < len(runes); i++ {
 			select {
@@ -168,6 +169,7 @@ func (s *QAService) StreamingQuery(ctx context.Context, question string, respons
 				close(responseChan)
 				return
 			case responseChan <- string(runes[i : i+1]):
+				time.Sleep(80 * time.Millisecond) // 控制打字速度
 				// 继续发送
 			}
 		}

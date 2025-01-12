@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI 知识库问答系统</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@6.5.95/css/materialdesignicons.min.css">
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #3b82f6;
+            --background-color: #f8fafc;
+            --border-color: #e2e8f0;
+            --text-color: #1e293b;
+            --success-color: #22c55e;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+
+        .header {
+            background-color: white;
+            padding: 1rem 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            position: fixed;
+            width: 100%;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .main-container {
+            max-width: 1200px;
+            margin: 5rem auto 2rem;
+            padding: 1rem;
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 2rem;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+        }
+
+        .upload-panel {
+            position: sticky;
+            top: 6rem;
+            height: fit-content;
+        }
+
+        .panel-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            color: var(--text-color);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .file-input-container {
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+            padding: 2rem 1rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .file-input-container:hover {
+            border-color: var(--primary-color);
+        }
+
+        .file-input-container input[type="file"] {
+            display: none;
+        }
+
+        .upload-icon {
+            font-size: 2rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 8rem);
+        }
+
+        .chat-box {
+            flex: 1;
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            overflow-y: auto;
+            line-height: 1.8;
+        }
+
+        .welcome-container {
+            text-align: center;
+            padding: 2rem;
+            color: #666;
+        }
+
+        .welcome-icon {
+            font-size: 4rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+
+        .welcome-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-color);
+        }
+
+        .welcome-subtitle {
+            font-size: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .feature-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            text-align: left;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 1rem;
+            background: var(--background-color);
+            border-radius: 8px;
+        }
+
+        .feature-icon {
+            font-size: 1.5rem;
+            color: var(--primary-color);
+        }
+
+        .message {
+            margin-bottom: 1.5rem;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .question {
+            color: var(--text-color);
+            font-weight: 500;
+        }
+
+        .answer {
+            color: var(--text-color);
+            margin-top: 0.5rem;
+            padding-left: 1rem;
+            border-left: 3px solid var(--primary-color);
+        }
+
+        .input-area {
+            display: flex;
+            gap: 1rem;
+            background: white;
+            padding: 1rem;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        button {
+            padding: 0.75rem 1.5rem;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        button:hover {
+            background-color: var(--secondary-color);
+        }
+
+        .status {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            display: none;
+        }
+
+        .status.success {
+            display: block;
+            background-color: #dcfce7;
+            color: #166534;
+        }
+
+        .status.error {
+            display: block;
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span class="mdi mdi-robot"></span>
+                AI 知识库问答系统
+            </div>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <div class="upload-panel panel">
+            <h2 class="panel-title">
+                <span class="mdi mdi-upload"></span>
+                知识库上传
+            </h2>
+            <div class="file-input-container" onclick="document.getElementById('file').click()">
+                <span class="mdi mdi-file-upload upload-icon"></span>
+                <p>点击或拖拽文件到此处上传</p>
+                <p style="font-size: 0.875rem; color: #666; margin-top: 0.5rem;">
+                    支持 PDF、TXT、MD、CSV 等格式
+                </p>
+                <input type="file" id="file" multiple onchange="uploadFile()">
+            </div>
+            <div id="uploadStatus" class="status"></div>
+        </div>
+
+        <div class="chat-container">
+            <div id="chatBox" class="chat-box">
+                <div class="welcome-container">
+                    <span class="mdi mdi-robot welcome-icon"></span>
+                    <h1 class="welcome-title">欢迎使用 AI 知识库问答系统</h1>
+                    <p class="welcome-subtitle">上传您的文档，开始智能问答之旅</p>
+                    <div class="feature-list">
+                        <div class="feature-item">
+                            <span class="mdi mdi-file-upload feature-icon"></span>
+                            <div>
+                                <h3>文档上传</h3>
+                                <p>支持多种格式文档</p>
+                            </div>
+                        </div>
+                        <div class="feature-item">
+                            <span class="mdi mdi-brain feature-icon"></span>
+                            <div>
+                                <h3>智能理解</h3>
+                                <p>深度理解文档内容</p>
+                            </div>
+                        </div>
+                        <div class="feature-item">
+                            <span class="mdi mdi-chat feature-icon"></span>
+                            <div>
+                                <h3>实时对话</h3>
+                                <p>流畅的对话体验</p>
+                            </div>
+                        </div>
+                        <div class="feature-item">
+                            <span class="mdi mdi-lightning-bolt feature-icon"></span>
+                            <div>
+                                <h3>快速响应</h3>
+                                <p>毫秒级的响应速度</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="input-area">
+                <input type="text" id="question" placeholder="请输入您的问题..." autofocus>
+                <button onclick="sendQuestion()">
+                    <span class="mdi mdi-send"></span>
+                    发送
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 显示状态信息
+        function showStatus(message, type) {
+            const status = document.getElementById('uploadStatus');
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        // 上传文件
+        window.uploadFile = async function() {
+            const fileInput = document.getElementById('file');
+            const status = document.getElementById('uploadStatus');
+            const files = fileInput.files;
+
+            if (files.length === 0) {
+                showStatus('请选择文件', 'error');
+                return;
+            }
+
+            for (let file of files) {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    showStatus(`正在上传 ${file.name}...`, 'info');
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'Accept': 'application/json'
+                        }
+                    });
+
+                    const result = await response.json();
+                    if (response.ok) {
+                        showStatus(`${file.name} 上传成功！`, 'success');
+                    } else {
+                        showStatus(`${file.name} 上传失败：${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    showStatus(`${file.name} 上传出错：${error.message}`, 'error');
+                }
+            }
+        }
+
+        // 发送问题
+        function sendQuestion() {
+            const question = document.getElementById('question').value;
+            const chatBox = document.getElementById('chatBox');
+            
+            if (!question) {
+                return;
+            }
+
+            // 清除欢迎页面（如果存在）
+            const welcomeContainer = chatBox.querySelector('.welcome-container');
+            if (welcomeContainer) {
+                chatBox.innerHTML = '';
+            }
+
+            // 添加问题到对话框
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.innerHTML = `
+                <div class="question">问：${question}</div>
+                <div class="answer">答：</div>
+            `;
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+            
+            // 发送问题并建立连接
+            const response = fetch('/api/query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream'
+                },
+                body: JSON.stringify({ question: question })
+            }).then(response => {
+                const reader = response.body.getReader();
+                let decoder = new TextDecoder();
+                const answerDiv = messageDiv.querySelector('.answer');
+                
+                function readStream() {
+                    reader.read().then(({done, value}) => {
+                        if (done) {
+                            document.getElementById('question').value = '';
+                            return;
+                        }
+                        
+                        const text = decoder.decode(value);
+                        const lines = text.split('\n');
+                        for (const line of lines) {
+                            if (line.startsWith('data:')) {
+                                const char = line.slice(5);
+                                if (char) {
+                                    answerDiv.innerHTML = answerDiv.innerHTML + char;
+                                }
+                            }
+                        }
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                        readStream();
+                    });
+                }
+                
+                readStream();
+            });
+        }
+
+        // 支持回车发送
+        document.getElementById('question').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendQuestion();
+            }
+        });
+
+        // 拖拽上传
+        const dropZone = document.querySelector('.file-input-container');
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color');
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border-color');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border-color');
+            const files = e.dataTransfer.files;
+            const fileInput = document.getElementById('file');
+            const dataTransfer = new DataTransfer();
+            Array.from(files).forEach(file => {
+                dataTransfer.items.add(file);
+            });
+            fileInput.files = dataTransfer.files;
+            uploadFile();
+        });
+    </script>
+</body>
+</html> 
