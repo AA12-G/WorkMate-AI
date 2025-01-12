@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI 知识库问答系统</title>
+    <title>AI 智能办公助手</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@6.5.95/css/materialdesignicons.min.css">
     <style>
         :root {
@@ -174,18 +174,124 @@
         .message {
             margin-bottom: 1.5rem;
             animation: fadeIn 0.3s ease;
+            display: flex;
+            gap: 1rem;
+        }
+
+        .message.user-message {
+            flex-direction: row-reverse;
+        }
+
+        .message-content {
+            flex: 1;
+            max-width: 80%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .user-message .message-content {
+            align-items: flex-end;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .user-avatar {
+            background-color: #e0f2fe;
+            color: var(--primary-color);
+        }
+
+        .ai-avatar {
+            background-color: #f0fdf4;
+            color: var(--success-color);
         }
 
         .question {
             color: var(--text-color);
             font-weight: 500;
+            background-color: #e0f2fe;
+            border-radius: 12px;
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+            padding: 0.4rem 0.6rem;
         }
 
         .answer {
             color: var(--text-color);
-            margin-top: 0.5rem;
-            padding-left: 1rem;
-            border-left: 3px solid var(--primary-color);
+            background-color: #f0fdf4;
+            border-radius: 12px;
+            position: relative;
+            width: 100%;
+            padding: 0.4rem 0.6rem;
+        }
+
+        .answer p {
+            padding: 1.2rem;
+            margin: 0;
+        }
+
+        .answer pre {
+            margin: 0;
+            background-color: #1e1e1e;
+            border-radius: 0;
+            padding: 0.8rem;
+        }
+
+        .answer pre:only-child {
+            border-radius: 12px;
+        }
+
+        .answer pre:first-child {
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+        }
+
+        .answer pre:last-child {
+            border-bottom-left-radius: 12px;
+            border-bottom-right-radius: 12px;
+        }
+
+        .answer pre code {
+            display: block;
+            padding: 0.6rem;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            color: #d4d4d4;
+        }
+
+        .language-marker {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            font-size: 0.8rem;
+            color: #666;
+            opacity: 0.8;
+        }
+
+        /* 添加代码块滚动条样式 */
+        .answer pre code::-webkit-scrollbar {
+            height: 6px;
+        }
+
+        .answer pre code::-webkit-scrollbar-thumb {
+            background: #666;
+            border-radius: 3px;
+        }
+
+        .answer pre code::-webkit-scrollbar-track {
+            background: #1e1e1e;
+            border-radius: 3px;
         }
 
         .input-area {
@@ -273,14 +379,177 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #a8a8a8;
         }
+
+        /* 更新代码块相关的 CSS 样式 */
+        pre {
+            background-color: #1e1e1e;
+            border-radius: 8px;
+            padding: 1.2rem;
+            overflow-x: auto;
+            margin: 0.8rem 0;
+            position: relative;
+        }
+
+        code {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            color: #d4d4d4;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            white-space: pre;
+            word-wrap: normal;
+            tab-size: 4;
+        }
+
+        .keyword { color: #569cd6; }
+        .string { color: #ce9178; }
+        .comment { color: #6a9955; }
+        .number { color: #b5cea8; }
+        .function { color: #dcdcaa; }
+
+        .thinking {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #666;
+            font-size: 0.9rem;
+            padding: 0.6rem 0.8rem;
+        }
+
+        .thinking-dots {
+            display: flex;
+            gap: 0.3rem;
+        }
+
+        .thinking-dots span {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: #666;
+            animation: thinking 1.4s infinite;
+        }
+
+        .thinking-dots span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .thinking-dots span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes thinking {
+            0%, 100% { opacity: 0.4; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1); }
+        }
+
+        .question > p,
+        .answer > p {
+            padding: 0.6rem 0.8rem;
+            margin: 0;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 1rem;
+            color: #666;
+            font-size: 0.8rem;
+            margin-top: 2rem;
+        }
+
+        .footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        .dev-badge {
+            position: fixed;
+            bottom: 2rem;
+            left: 2rem;
+            background: rgba(37, 99, 235, 0.05);
+            padding: 0.6rem 1rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            color: var(--text-color);
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            z-index: 1000;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            border: 1px solid rgba(37, 99, 235, 0.1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .dev-badge:hover {
+            transform: translateY(-2px);
+            background: rgba(37, 99, 235, 0.08);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.1);
+        }
+
+        .dev-badge .mdi-code-tags {
+            color: var(--primary-color);
+            font-size: 1.1rem;
+            padding: 0.4rem;
+            border-radius: 8px;
+            background: rgba(37, 99, 235, 0.1);
+        }
+
+        .dev-badge .github-link {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+            padding: 0.3rem 0.5rem;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .dev-badge .github-link:hover {
+            background: rgba(37, 99, 235, 0.1);
+        }
+
+        .dev-badge .github-link .mdi-github {
+            color: var(--primary-color);
+            font-size: 1.1rem;
+        }
+
+        .dev-badge .divider {
+            width: 1px;
+            height: 1rem;
+            background: rgba(37, 99, 235, 0.2);
+            margin: 0 0.2rem;
+        }
+
+        .dev-badge .version {
+            font-size: 0.8rem;
+            color: var(--primary-color);
+            opacity: 0.8;
+            background: rgba(37, 99, 235, 0.08);
+            padding: 0.2rem 0.5rem;
+            border-radius: 6px;
+        }
     </style>
 </head>
 <body>
+    <div class="dev-badge">
+        <span class="mdi mdi-code-tags"></span>
+        <span>Powered by</span>
+        <a href="https://github.com/AA12-G" target="_blank" class="github-link">
+            <span class="mdi mdi-github"></span>
+            <span>AA12-G</span>
+        </a>
+        <span class="divider"></span>
+        <span class="version">v1.0.0</span>
+    </div>
     <header class="header">
         <div class="header-content">
             <div class="logo">
                 <span class="mdi mdi-robot"></span>
-                AI 知识库问答系统
+                AI 智能办公助手
             </div>
         </div>
     </header>
@@ -306,7 +575,7 @@
             <div id="chatBox" class="chat-box">
                 <div class="welcome-container">
                     <span class="mdi mdi-robot welcome-icon"></span>
-                    <h1 class="welcome-title">欢迎使用 AI 知识库问答系统</h1>
+                    <h1 class="welcome-title">欢迎使用 AI 智能办公助手</h1>
                     <p class="welcome-subtitle">上传您的文档，开始智能问答之旅</p>
                     <div class="feature-list">
                         <div class="feature-item">
@@ -349,6 +618,10 @@
             </div>
         </div>
     </div>
+
+    <footer class="footer">
+        <p>Powered by <a href="https://github.com/AA12-G" target="_blank">@AA12-G</a> | v1.0.0</p>
+    </footer>
 
     <script>
         // 显示状态信息
@@ -395,68 +668,219 @@
             }
         }
 
-        // 发送问题
-        function sendQuestion() {
-            const question = document.getElementById('question').value;
-            const chatBox = document.getElementById('chatBox');
+        // 修改代码块处理函数
+        function processMessageContent(content) {
+            // 移除开头和结尾的多余空白
+            content = content.trim();
             
-            if (!question) {
-                return;
+            if (!content.includes('```')) {
+                // 处理普通文本，保持段落格式
+                return content.split('\n').map(line => {
+                    line = line.trim();
+                    return line ? `<p>${line}</p>` : '';
+                }).join('');
             }
 
-            // 清除欢迎页面（如果存在）
+            let result = '';
+            let isInCodeBlock = false;
+            let currentCodeBlock = '';
+            let currentLang = '';
+            
+            // 按行处理内容
+            const lines = content.split('\n');
+            for (let line of lines) {
+                if (line.startsWith('```')) {
+                    if (!isInCodeBlock) {
+                        // 开始新的代码块
+                        isInCodeBlock = true;
+                        currentLang = line.slice(3).trim();
+                        currentCodeBlock = '';
+                    } else {
+                        // 结束当前代码块
+                        isInCodeBlock = false;
+                        const langDisplay = currentLang ? 
+                            `<span class="language-marker">${currentLang}</span>` : '';
+                        result += `<pre><code>${langDisplay}${escapeHtml(currentCodeBlock.trim())}</code></pre>`;
+                    }
+                } else if (isInCodeBlock) {
+                    // 在代码块内
+                    currentCodeBlock += line + '\n';
+                } else {
+                    // 普通文本
+                    line = line.trim();
+                    if (line) {
+                        result += `<p>${line}</p>`;
+                    }
+                }
+            }
+            
+            return result;
+        }
+
+        // 添加 HTML 转义函数
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // 在 script 标签中添加一个全局控制器变量
+        let currentController = null;
+
+        // 修改 sendQuestion 函数
+        function sendQuestion() {
+            const question = document.getElementById('question').value.trim();
+            if (!question) return;
+            
+            // 如果存在正在进行的请求，立即取消
+            if (currentController) {
+                currentController.abort();
+            }
+            
+            const chatBox = document.getElementById('chatBox');
             const welcomeContainer = chatBox.querySelector('.welcome-container');
             if (welcomeContainer) {
                 chatBox.innerHTML = '';
             }
 
-            // 添加问题到对话框
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message';
-            messageDiv.innerHTML = `
-                <div class="question">问：${question}</div>
-                <div class="answer">答：</div>
-            `;
-            chatBox.appendChild(messageDiv);
-            chatBox.scrollTop = chatBox.scrollHeight;
+            // 添加用户问题
+            appendMessage('user', question);
             
-            // 发送问题并建立连接
-            const response = fetch('/api/query', {
+            // 添加AI回答容器，并显示思考中的状态
+            const aiMessageDiv = appendMessage('ai', `
+                <div class="thinking">
+                    <span>AI 正在思考</span>
+                    <div class="thinking-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            `);
+            const answerDiv = aiMessageDiv.querySelector('.answer');
+            
+            // 清空输入框并重置焦点
+            document.getElementById('question').value = '';
+            document.getElementById('question').focus();
+
+            // 创建新的 AbortController
+            currentController = new AbortController();
+            const signal = currentController.signal;
+
+            // 发送请求
+            fetch('/api/query', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'text/event-stream'
                 },
-                body: JSON.stringify({ question: question })
+                body: JSON.stringify({ question }),
+                signal  // 添加 signal 以支持取消
             }).then(response => {
                 const reader = response.body.getReader();
                 let decoder = new TextDecoder();
-                const answerDiv = messageDiv.querySelector('.answer');
+                let buffer = '';
                 
                 function readStream() {
                     reader.read().then(({done, value}) => {
                         if (done) {
-                            document.getElementById('question').value = '';
+                            if (buffer) {
+                                answerDiv.innerHTML = processMessageContent(buffer);
+                            }
+                            currentController = null;  // 清除当前控制器
                             return;
                         }
+
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
                         
-                        const text = decoder.decode(value);
-                        const lines = text.split('\n');
                         for (const line of lines) {
                             if (line.startsWith('data:')) {
-                                const char = line.slice(5);
-                                if (char) {
-                                    answerDiv.innerHTML = answerDiv.innerHTML + char;
+                                if (!buffer) {
+                                    answerDiv.innerHTML = '';
                                 }
+                                buffer += line.slice(5);
                             }
                         }
+
+                        if (isCompleteContent(buffer)) {
+                            answerDiv.innerHTML = processMessageContent(buffer);
+                        }
+                        
                         chatBox.scrollTop = chatBox.scrollHeight;
                         readStream();
+                    }).catch(error => {
+                        if (error.name === 'AbortError') {
+                            // 请求被取消，不需要显示错误
+                            return;
+                        }
+                        answerDiv.innerHTML = `
+                            <div style="color: #dc2626;">
+                                抱歉，读取响应出错：${error.message}
+                            </div>
+                        `;
                     });
                 }
                 
                 readStream();
+            }).catch(error => {
+                if (error.name === 'AbortError') {
+                    // 请求被取消，不需要显示错误
+                    return;
+                }
+                answerDiv.innerHTML = `
+                    <div style="color: #dc2626;">
+                        抱歉，请求出现错误：${error.message}
+                    </div>
+                `;
+            }).finally(() => {
+                if (currentController && currentController.signal.aborted) {
+                    currentController = null;
+                }
             });
+        }
+
+        // 辅助函数：添加消息到聊天框
+        function appendMessage(type, content) {
+            const chatBox = document.getElementById('chatBox');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+            
+            const avatar = type === 'user' ? 
+                '<span class="mdi mdi-account"></span>' : 
+                '<span class="mdi mdi-robot"></span>';
+            
+            const avatarClass = type === 'user' ? 'user-avatar' : 'ai-avatar';
+            const contentClass = type === 'user' ? 'question' : 'answer';
+            
+            messageDiv.innerHTML = `
+                <div class="avatar ${avatarClass}">
+                    ${avatar}
+                </div>
+                <div class="message-content">
+                    <div class="${contentClass}">${content}</div>
+                </div>
+            `;
+            
+            chatBox.appendChild(messageDiv);
+            return messageDiv;
+        }
+
+        // 优化完整性检查函数
+        function isCompleteContent(content) {
+            if (!content.includes('```')) return true;
+            
+            const codeBlocks = content.match(/```/g);
+            if (!codeBlocks) return true;
+            
+            // 检查代码块配对
+            if (codeBlocks.length % 2 !== 0) return false;
+            
+            // 确保最后一个代码块已完整关闭
+            return content.match(/```[\s\S]*?```\s*$/);
         }
 
         // 支持回车发送

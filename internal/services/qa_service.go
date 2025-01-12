@@ -169,7 +169,7 @@ func (s *QAService) StreamingQuery(ctx context.Context, question string, respons
 				close(responseChan)
 				return
 			case responseChan <- string(runes[i : i+1]):
-				time.Sleep(80 * time.Millisecond) // 控制打字速度
+				time.Sleep(60 * time.Millisecond) // 控制打字速度
 				// 继续发送
 			}
 		}
