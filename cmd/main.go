@@ -61,6 +61,7 @@ func main() {
 	{
 		api.POST("/upload", qaHandler.UploadFile)
 		api.POST("/query", qaHandler.Query)
+		api.GET("/documents", qaHandler.ListDocuments)
 	}
 
 	// 启动服务器

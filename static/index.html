@@ -532,6 +532,100 @@
             padding: 0.2rem 0.5rem;
             border-radius: 6px;
         }
+
+        /* 文档列表样式 */
+        .uploaded-files {
+            margin-top: 1.5rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1rem;
+        }
+        
+        .uploaded-files h3 {
+            font-size: 0.95rem;
+            color: #666;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .file-list {
+            max-height: 300px;
+            overflow-y: auto;
+            padding-right: 0.5rem;
+        }
+        
+        .file-item {
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            background: var(--background-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .file-item:hover {
+            border-color: var(--primary-color);
+            background: white;
+        }
+        
+        .file-item.selected {
+            background: rgba(37, 99, 235, 0.05);
+            border-color: var(--primary-color);
+        }
+
+        .file-checkbox {
+            margin-right: 1rem;
+            width: 18px;
+            height: 18px;
+            accent-color: var(--primary-color);
+        }
+
+        .selected-docs-info {
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+            color: #666;
+        }
+        
+        .file-name {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+            color: var(--text-color);
+            word-break: break-all;
+        }
+        
+        .file-meta {
+            color: #666;
+            font-size: 0.8rem;
+        }
+
+        .file-content {
+            flex: 1;
+        }
+        
+        .file-actions {
+            margin-left: 1rem;
+        }
+        
+        .delete-btn {
+            color: #dc2626;
+            background: none;
+            border: none;
+            padding: 0.25rem;
+            cursor: pointer;
+            opacity: 0.6;
+            transition: all 0.2s ease;
+        }
+        
+        .delete-btn:hover {
+            opacity: 1;
+            background: none;
+        }
     </style>
 </head>
 <body>
@@ -569,6 +663,16 @@
                 <input type="file" id="file" multiple onchange="uploadFile()">
             </div>
             <div id="uploadStatus" class="status"></div>
+            <div class="uploaded-files">
+                <h3>
+                    <span class="mdi mdi-folder-open"></span>
+                    知识库文档
+                </h3>
+                <div class="selected-docs-info" id="selectedDocsInfo"></div>
+                <div id="fileList" class="file-list">
+                    <!-- 文件列表将通过 JavaScript 动态填充 -->
+                </div>
+            </div>
         </div>
 
         <div class="chat-container">
@@ -631,21 +735,152 @@
             status.className = 'status ' + type;
         }
 
-        // 上传文件
+        // 文档存储管理
+        const DocumentStorage = {
+            save: function(fileInfo) {
+                const documents = this.getAll();
+                documents.push({
+                    id: Date.now().toString(),
+                    name: fileInfo.name,
+                    size: fileInfo.size,
+                    uploadTime: new Date().toISOString(),
+                    selected: false,
+                });
+                localStorage.setItem('uploadedDocuments', JSON.stringify(documents));
+            },
+            
+            toggleSelection: function(docId) {
+                const documents = this.getAll();
+                const updatedDocs = documents.map(doc => {
+                    if (doc.id === docId) {
+                        doc.selected = !doc.selected;
+                    }
+                    return doc;
+                });
+                localStorage.setItem('uploadedDocuments', JSON.stringify(updatedDocs));
+                this.updateSelectedInfo();
+            },
+            
+            getSelectedDocs: function() {
+                return this.getAll().filter(doc => doc.selected);
+            },
+            
+            updateSelectedInfo: function() {
+                const selectedDocs = this.getSelectedDocs();
+                const infoElement = document.getElementById('selectedDocsInfo');
+                if (selectedDocs.length > 0) {
+                    infoElement.textContent = `已选择 ${selectedDocs.length} 个知识库文档`;
+                } else {
+                    infoElement.textContent = '请选择要使用的知识库文档';
+                }
+            },
+            
+            getAll: function() {
+                const docs = localStorage.getItem('uploadedDocuments');
+                return docs ? JSON.parse(docs) : [];
+            },
+            
+            remove: function(docId) {
+                const documents = this.getAll();
+                const updatedDocs = documents.filter(doc => doc.id !== docId);
+                localStorage.setItem('uploadedDocuments', JSON.stringify(updatedDocs));
+            },
+            
+            clear: function() {
+                localStorage.removeItem('uploadedDocuments');
+            }
+        };
+
+        // 删除文档
+        function deleteDocument(docId, docName) {
+            if (confirm(`确定要删除文档 "${docName}" 吗？`)) {
+                DocumentStorage.remove(docId);
+                loadDocuments(); // 刷新文档列表
+            }
+        }
+
+        // 显示文档列表
+        function loadDocuments() {
+            const documents = DocumentStorage.getAll();
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '';
+            
+            documents.forEach(doc => {
+                const uploadDate = new Date(doc.uploadTime).toLocaleDateString();
+                const fileItem = document.createElement('div');
+                fileItem.className = `file-item${doc.selected ? ' selected' : ''}`;
+                
+                fileItem.innerHTML = `
+                    <input type="checkbox" class="file-checkbox" ${doc.selected ? 'checked' : ''}>
+                    <div class="file-content">
+                        <div class="file-name">
+                            <span class="mdi mdi-file-document"></span>
+                            ${doc.name}
+                        </div>
+                        <div class="file-meta">
+                            ${uploadDate} · ${formatFileSize(doc.size)}
+                        </div>
+                    </div>
+                    <div class="file-actions">
+                        <button class="delete-btn" title="删除文档">
+                            <span class="mdi mdi-delete"></span>
+                        </button>
+                    </div>
+                `;
+                
+                const checkbox = fileItem.querySelector('.file-checkbox');
+                // 处理复选框变化
+                checkbox.addEventListener('change', () => {
+                    DocumentStorage.toggleSelection(doc.id);
+                    fileItem.classList.toggle('selected');
+                });
+                
+                // 为文档项添加点击事件（不包括复选框和删除按钮）
+                fileItem.addEventListener('click', (e) => {
+                    // 如果点击的是复选框或删除按钮，不处理
+                    if (e.target === checkbox || e.target.closest('.delete-btn')) {
+                        return;
+                    }
+                    
+                    // 触发复选框的点击事件
+                    checkbox.click();
+                });
+                
+                // 添加删除按钮事件监听器
+                const deleteBtn = fileItem.querySelector('.delete-btn');
+                deleteBtn.addEventListener('click', () => deleteDocument(doc.id, doc.name));
+                
+                fileList.appendChild(fileItem);
+            });
+            
+            DocumentStorage.updateSelectedInfo();
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        // 页面加载时显示文档列表
+        document.addEventListener('DOMContentLoaded', loadDocuments);
+        
+        // 修改上传文件函数
         window.uploadFile = async function() {
             const fileInput = document.getElementById('file');
-            const status = document.getElementById('uploadStatus');
             const files = fileInput.files;
-
+  
             if (files.length === 0) {
                 showStatus('请选择文件', 'error');
                 return;
             }
-
+  
             for (let file of files) {
                 const formData = new FormData();
                 formData.append('file', file);
-
+  
                 try {
                     showStatus(`正在上传 ${file.name}...`, 'info');
                     const response = await fetch('/api/upload', {
@@ -655,10 +890,17 @@
                             'Accept': 'application/json'
                         }
                     });
-
+  
                     const result = await response.json();
                     if (response.ok) {
                         showStatus(`${file.name} 上传成功！`, 'success');
+                        // 保存文档信息到本地存储
+                        DocumentStorage.save({
+                            name: file.name,
+                            size: file.size,
+                            type: file.type
+                        });
+                        loadDocuments(); // 刷新文档列表
                     } else {
                         showStatus(`${file.name} 上传失败：${result.error}`, 'error');
                     }

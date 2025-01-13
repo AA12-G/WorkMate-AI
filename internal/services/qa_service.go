@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 	"your-project/config"
+	"your-project/models"
 	"your-project/pkg/vectorstore"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/documentloaders"
 	"github.com/tmc/langchaingo/llms"
@@ -79,6 +81,19 @@ func NewQAService(cfg *config.Config) (*QAService, error) {
 		return nil, err
 	}
 
+	// 创建文档元数据集合
+	client := qdrant.NewClient(cfg.QdrantHTTPURL)
+	_, err = client.CreateCollection(context.Background(), &qdrant.CreateCollectionRequest{
+		CollectionName: cfg.DocumentMetadataCollection,
+		VectorsConfig: &qdrant.VectorsConfig{
+			Size:     1, // 元数据集合不需要向量
+			Distance: qdrant.CosineSimilarity,
+		},
+	})
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		return nil, fmt.Errorf("创建文档元数据集合失败: %v", err)
+	}
+
 	return &QAService{
 		llm:    llmInstance,
 		qdrant: qdrant,
@@ -129,6 +144,43 @@ func (s *QAService) ProcessFile(ctx context.Context, filepath string) error {
 
 	// 添加文档到向量存储
 	_, err = s.qdrant.GetStore().AddDocuments(ctx, chunkDocuments)
+	if err != nil {
+		return err
+	}
+
+	// 保存文档元数据
+	fileInfo, err := os.Stat(filepath)
+	if err != nil {
+		return err
+	}
+
+	doc := models.Document{
+		ID:          uuid.New().String(),
+		Name:        filepath.Base(filepath),
+		Type:        filepath.Ext(filepath),
+		Size:        fileInfo.Size(),
+		UploadTime:  time.Now(),
+		Description: "", // 可以添加文档描述
+	}
+
+	// 将文档元数据保存到 Qdrant
+	client := qdrant.NewClient(s.config.QdrantHTTPURL)
+	_, err = client.UpsertPoints(ctx, &qdrant.UpsertPointsRequest{
+		CollectionName: s.config.DocumentMetadataCollection,
+		Points: []qdrant.Point{
+			{
+				ID: doc.ID,
+				Payload: map[string]interface{}{
+					"name":        doc.Name,
+					"type":        doc.Type,
+					"size":        doc.Size,
+					"upload_time": doc.UploadTime.Unix(),
+					"description": doc.Description,
+				},
+			},
+		},
+	})
+
 	return err
 }
 
@@ -177,4 +229,38 @@ func (s *QAService) StreamingQuery(ctx context.Context, question string, respons
 	}()
 
 	return nil
+}
+
+func (s *QAService) ListDocuments(ctx context.Context) (*models.DocumentList, error) {
+	// 从 Qdrant 获取文档列表
+	client := qdrant.NewClient(s.config.QdrantHTTPURL)
+
+	// 获取集合中的所有点
+	points, err := client.GetPoints(ctx, &qdrant.GetPointsRequest{
+		CollectionName: s.config.DocumentMetadataCollection,
+		WithPayload:    true,
+		WithVector:     false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("获取文档列表失败: %v", err)
+	}
+
+	// 转换为文档列表
+	documents := make([]models.Document, 0)
+	for _, point := range points.Result {
+		doc := models.Document{
+			ID:          point.ID,
+			Name:        point.Payload["name"].(string),
+			Type:        point.Payload["type"].(string),
+			Size:        int64(point.Payload["size"].(float64)),
+			UploadTime:  time.Unix(int64(point.Payload["upload_time"].(float64)), 0),
+			Description: point.Payload["description"].(string),
+		}
+		documents = append(documents, doc)
+	}
+
+	return &models.DocumentList{
+		Documents: documents,
+		Total:     len(documents),
+	}, nil
 }

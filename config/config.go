@@ -7,12 +7,13 @@ import (
 )
 
 type Config struct {
-	QdrantGRPCURL  string
-	QdrantHTTPURL  string
-	CollectionName string
-	ServerPort     string
-	UseOllama      bool
-	OllamaModel    string
+	QdrantGRPCURL              string
+	QdrantHTTPURL              string
+	CollectionName             string
+	ServerPort                 string
+	UseOllama                  bool
+	OllamaModel                string
+	DocumentMetadataCollection string
 }
 
 func NewConfig() *Config {
@@ -20,12 +21,13 @@ func NewConfig() *Config {
 	_ = godotenv.Load()
 
 	return &Config{
-		QdrantGRPCURL:  getEnv("QDRANT_GRPC_URL", "localhost:6334"),
-		QdrantHTTPURL:  getEnv("QDRANT_HTTP_URL", "http://localhost:6333"),
-		CollectionName: getEnv("COLLECTION_NAME", "knowledge-base"),
-		ServerPort:     getEnv("SERVER_PORT", ":8080"),
-		UseOllama:      getEnvBool("USE_OLLAMA", true),
-		OllamaModel:    getEnv("OLLAMA_MODEL", "llama2"),
+		QdrantGRPCURL:              getEnv("QDRANT_GRPC_URL", "localhost:6334"),
+		QdrantHTTPURL:              getEnv("QDRANT_HTTP_URL", "http://localhost:6333"),
+		CollectionName:             getEnv("COLLECTION_NAME", "knowledge-base"),
+		ServerPort:                 getEnv("SERVER_PORT", ":8080"),
+		UseOllama:                  getEnvBool("USE_OLLAMA", true),
+		OllamaModel:                getEnv("OLLAMA_MODEL", "llama3.2"),
+		DocumentMetadataCollection: getEnv("DOC_METADATA_COLLECTION", "document-metadata"),
 	}
 }
 

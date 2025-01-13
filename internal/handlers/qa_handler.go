@@ -106,3 +106,15 @@ func (h *QAHandler) Query(c *gin.Context) {
 		return true
 	})
 }
+
+func (h *QAHandler) ListDocuments(c *gin.Context) {
+	documents, err := h.qaService.ListDocuments(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "获取文档列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, documents)
+}
