@@ -1,11 +1,11 @@
 package main
 
 import (
+	"WorkMate-AI/config"
+	"WorkMate-AI/internal/handlers"
+	"WorkMate-AI/internal/services"
 	"log"
 	"net/http"
-	"your-project/config"
-	"your-project/internal/handlers"
-	"your-project/internal/services"
 
 	"github.com/gin-gonic/gin"
 )

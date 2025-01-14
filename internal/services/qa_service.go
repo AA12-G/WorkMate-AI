@@ -2,23 +2,29 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
-	"your-project/config"
-	"your-project/models"
-	"your-project/pkg/vectorstore"
+
+	"WorkMate-AI/config"
+	"WorkMate-AI/internal/models"
+	"WorkMate-AI/pkg/vectorstore"
 
 	"github.com/google/uuid"
+	"github.com/qdrant/go-client/qdrant"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/documentloaders"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/ollama"
 	"github.com/tmc/langchaingo/textsplitter"
 	"github.com/tmc/langchaingo/vectorstores"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type QAService struct {
@@ -70,7 +76,8 @@ func NewQAService(cfg *config.Config) (*QAService, error) {
 	// 使用本地 embedder
 	embedder := &LocalEmbedder{llm: llmInstance}
 
-	qdrant, err := vectorstore.NewQdrantStore(
+	// 初始化 Qdrant 存储
+	qdrantStore, err := vectorstore.NewQdrantStore(
 		context.Background(),
 		cfg.QdrantGRPCURL,
 		cfg.QdrantHTTPURL,
@@ -81,53 +88,58 @@ func NewQAService(cfg *config.Config) (*QAService, error) {
 		return nil, err
 	}
 
-	// 创建文档元数据集合
-	client := qdrant.NewClient(cfg.QdrantHTTPURL)
-	_, err = client.CreateCollection(context.Background(), &qdrant.CreateCollectionRequest{
-		CollectionName: cfg.DocumentMetadataCollection,
-		VectorsConfig: &qdrant.VectorsConfig{
-			Size:     1, // 元数据集合不需要向量
-			Distance: qdrant.CosineSimilarity,
-		},
-	})
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		return nil, fmt.Errorf("创建文档元数据集合失败: %v", err)
-	}
-
 	return &QAService{
 		llm:    llmInstance,
-		qdrant: qdrant,
+		qdrant: qdrantStore,
 		config: cfg,
 	}, nil
 }
 
+// 修改辅助函数来处理 Qdrant URL
+func getQdrantHostAndPort(url string) (string, int) {
+	// 移除 http:// 或 https:// 前缀
+	url = strings.TrimPrefix(url, "http://")
+	url = strings.TrimPrefix(url, "https://")
+
+	// 如果 URL 包含端口号，分离主机名和端口
+	if strings.Contains(url, ":") {
+		parts := strings.Split(url, ":")
+		if len(parts) == 2 {
+			// 只取第一个冒号前后的部分
+			return parts[0], 6333
+		}
+	}
+
+	// 如果没有端口号或格式不正确，返回默认值
+	return url, 6333
+}
+
 // ProcessFile 处理上传的文件
-func (s *QAService) ProcessFile(ctx context.Context, filepath string) error {
+func (s *QAService) ProcessFile(ctx context.Context, filePath string) error {
 	// 打开文件
-	f, err := os.Open(filepath)
+	f, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	finfo, err := f.Stat()
+	fileInfo, err := f.Stat()
 	if err != nil {
 		return err
 	}
 
 	// 根据文件类型选择合适的加载器
 	var loader documentloaders.Loader
-	ext := strings.ToLower(path.Ext(filepath))
+	ext := strings.ToLower(path.Ext(filePath))
 
 	switch ext {
 	case ".pdf":
-		loader = documentloaders.NewPDF(f, finfo.Size())
+		loader = documentloaders.NewPDF(f, fileInfo.Size())
 	case ".txt", ".md":
 		loader = documentloaders.NewText(f)
 	case ".csv":
 		loader = documentloaders.NewCSV(f)
 	case ".doc", ".docx":
-		// 需要额外的库支持 Word 文档
 		return fmt.Errorf("暂不支持 Word 文档")
 	default:
 		return fmt.Errorf("不支持的文件类型: %s", ext)
@@ -149,112 +161,241 @@ func (s *QAService) ProcessFile(ctx context.Context, filepath string) error {
 	}
 
 	// 保存文档元数据
-	fileInfo, err := os.Stat(filepath)
-	if err != nil {
-		return err
-	}
-
 	doc := models.Document{
 		ID:          uuid.New().String(),
-		Name:        filepath.Base(filepath),
-		Type:        filepath.Ext(filepath),
+		Name:        filepath.Base(filePath),
+		Type:        filepath.Ext(filePath),
 		Size:        fileInfo.Size(),
 		UploadTime:  time.Now(),
-		Description: "", // 可以添加文档描述
+		Description: "",
 	}
 
-	// 将文档元数据保存到 Qdrant
-	client := qdrant.NewClient(s.config.QdrantHTTPURL)
-	_, err = client.UpsertPoints(ctx, &qdrant.UpsertPointsRequest{
+	// 创建 gRPC 客户端
+	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("连接 Qdrant 失败: %v", err)
+	}
+	defer conn.Close()
+
+	// 首先创建集合
+	collectionsClient := qdrant.NewCollectionsClient(conn)
+	_, err = collectionsClient.Create(ctx, &qdrant.CreateCollection{
 		CollectionName: s.config.DocumentMetadataCollection,
-		Points: []qdrant.Point{
-			{
-				ID: doc.ID,
-				Payload: map[string]interface{}{
-					"name":        doc.Name,
-					"type":        doc.Type,
-					"size":        doc.Size,
-					"upload_time": doc.UploadTime.Unix(),
-					"description": doc.Description,
+		VectorsConfig: &qdrant.VectorsConfig{
+			Config: &qdrant.VectorsConfig_Params{
+				Params: &qdrant.VectorParams{
+					Size:     3072,
+					Distance: qdrant.Distance_Cosine,
 				},
 			},
 		},
+	})
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("创建集合失败: %v", err)
+	}
+
+	// 使用 Points 客户端
+	pointsClient := qdrant.NewPointsClient(conn)
+
+	vector := make([]float32, 3072)
+	for i := range vector {
+		vector[i] = rand.Float32()
+	}
+
+	payload := make(map[string]*qdrant.Value)
+	payload["name"] = &qdrant.Value{
+		Kind: &qdrant.Value_StringValue{
+			StringValue: doc.Name,
+		},
+	}
+	payload["type"] = &qdrant.Value{
+		Kind: &qdrant.Value_StringValue{
+			StringValue: doc.Type,
+		},
+	}
+	payload["size"] = &qdrant.Value{
+		Kind: &qdrant.Value_IntegerValue{
+			IntegerValue: doc.Size,
+		},
+	}
+	payload["upload_time"] = &qdrant.Value{
+		Kind: &qdrant.Value_IntegerValue{
+			IntegerValue: doc.UploadTime.Unix(),
+		},
+	}
+	payload["description"] = &qdrant.Value{
+		Kind: &qdrant.Value_StringValue{
+			StringValue: doc.Description,
+		},
+	}
+
+	points := []*qdrant.PointStruct{
+		{
+			Id: &qdrant.PointId{
+				PointIdOptions: &qdrant.PointId_Uuid{
+					Uuid: doc.ID,
+				},
+			},
+			Vectors: &qdrant.Vectors{
+				VectorsOptions: &qdrant.Vectors_Vector{
+					Vector: &qdrant.Vector{
+						Data: vector,
+					},
+				},
+			},
+			Payload: payload,
+		},
+	}
+
+	_, err = pointsClient.Upsert(ctx, &qdrant.UpsertPoints{
+		CollectionName: s.config.DocumentMetadataCollection,
+		Points:         points,
 	})
 
 	return err
 }
 
-func (s *QAService) Query(ctx context.Context, question string) (string, error) {
-	qa := chains.NewRetrievalQAFromLLM(
-		s.llm,
-		vectorstores.ToRetriever(s.qdrant.GetStore(), 10),
-	)
-
-	return chains.Run(ctx, qa, question)
+func (s *QAService) ExtractPureText(response string) string {
+	// 检查是否是 JSON 格式的响应
+	if strings.HasPrefix(strings.TrimSpace(response), "{") {
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(response), &result); err == nil {
+			// 检查是否存在 "content" 字段
+			if content, ok := result["content"].(string); ok {
+				// 只返回第一个问题的答案
+				answers := strings.Split(content, "Q：")
+				if len(answers) > 1 {
+					// 返回第一个答案，去掉 "A：" 前缀
+					firstAnswer := strings.Split(answers[1], "A：")
+					if len(firstAnswer) > 1 {
+						return strings.TrimSpace(firstAnswer[1])
+					}
+				}
+				return content
+			}
+		}
+	}
+	return response
 }
 
-// StreamingQuery 提供流式问答服务
-func (s *QAService) StreamingQuery(ctx context.Context, question string, responseChan chan string) error {
-	qa := chains.NewRetrievalQAFromLLM(
-		s.llm,
-		vectorstores.ToRetriever(s.qdrant.GetStore(), 10),
-	)
+// 添加一个新的方法来获取基于文档 ID 的检索器
+func (s *QAService) getRetrieverForDocuments(documentIds []string) vectorstores.Retriever {
+	if len(documentIds) == 0 {
+		// 如果没有选择文档，使用所有文档
+		return vectorstores.ToRetriever(s.qdrant.GetStore(), 10)
+	}
 
-	// 使用 goroutine 处理查询
+	// 创建过滤器
+	filter := &qdrant.Filter{
+		Should: []*qdrant.Condition{
+			{
+				ConditionOneOf: &qdrant.Condition_HasId{
+					HasId: &qdrant.HasIdCondition{
+						HasId: &qdrant.HasIdCondition_OneOf{
+							OneOf: &qdrant.RepeatedStrings{
+								Strings: documentIds,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 返回带过滤器的检索器
+	return s.qdrant.GetStore().AsRetriever(10, vectorstores.WithFilters(filter))
+}
+
+// 修改 Query 方法
+func (s *QAService) Query(ctx context.Context, question string, documentIds []string) (string, error) {
+	retriever := s.getRetrieverForDocuments(documentIds)
+
+	// 更新提示词
+	prompt := fmt.Sprintf("请基于选中的文档，直接回答以下问题，不要列举其他相关问题。问题是：%s", question)
+
+	qa := chains.NewRetrievalQAFromLLM(s.llm, retriever)
+
+	response, err := chains.Run(ctx, qa, prompt)
+	if err != nil {
+		return "", err
+	}
+
+	return s.ExtractPureText(response), nil
+}
+
+// StreamResponse 结构体修改
+type StreamResponse string
+
+// StreamingQuery 方法修改
+func (s *QAService) StreamingQuery(ctx context.Context, question string, documentIds []string, responseChan chan StreamResponse) error {
+	// 获取基于选中文档的检索器
+	retriever := s.getRetrieverForDocuments(documentIds)
+
+	// 添加提示词
+	prompt := fmt.Sprintf("请基于选中的文档，直接回答以下问题，不要列举其他相关问题。问题是：%s", question)
+
+	qa := chains.NewRetrievalQAFromLLM(s.llm, retriever)
+
 	go func() {
-		// 获取完整答案
-		answer, err := chains.Run(ctx, qa, question)
+		defer close(responseChan)
+
+		answer, err := chains.Run(ctx, qa, prompt) // 使用带提示词的问题
 		if err != nil {
 			select {
 			case <-ctx.Done():
-			case responseChan <- "Error: " + err.Error():
+			case responseChan <- StreamResponse("Error: " + err.Error()):
 			}
-			close(responseChan)
 			return
 		}
 
-		// 按字符发送，实现打字机效果
-		runes := []rune(answer)
-		for i := 0; i < len(runes); i++ {
-			select {
-			case <-ctx.Done():
-				close(responseChan)
-				return
-			case responseChan <- string(runes[i : i+1]):
-				time.Sleep(60 * time.Millisecond) // 控制打字速度
-				// 继续发送
-			}
+		pureText := s.ExtractPureText(answer)
+		select {
+		case <-ctx.Done():
+			return
+		case responseChan <- StreamResponse(pureText):
 		}
-		close(responseChan)
 	}()
 
 	return nil
 }
 
 func (s *QAService) ListDocuments(ctx context.Context) (*models.DocumentList, error) {
-	// 从 Qdrant 获取文档列表
-	client := qdrant.NewClient(s.config.QdrantHTTPURL)
+	config := &qdrant.Config{
+		Host: "localhost",
+		Port: 6333,
+	}
 
-	// 获取集合中的所有点
-	points, err := client.GetPoints(ctx, &qdrant.GetPointsRequest{
+	client, err := qdrant.NewClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("创建 Qdrant 客户端失败: %v", err)
+	}
+
+	var limit uint32 = 100
+	request := &qdrant.ScrollPoints{
 		CollectionName: s.config.DocumentMetadataCollection,
-		WithPayload:    true,
-		WithVector:     false,
-	})
+		WithPayload: &qdrant.WithPayloadSelector{
+			SelectorOptions: &qdrant.WithPayloadSelector_Enable{
+				Enable: true,
+			},
+		},
+		Limit: &limit,
+	}
+
+	response, err := client.Scroll(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("获取文档列表失败: %v", err)
 	}
 
-	// 转换为文档列表
 	documents := make([]models.Document, 0)
-	for _, point := range points.Result {
+	// 直接使用 response 作为点的切片
+	for _, point := range response {
 		doc := models.Document{
-			ID:          point.ID,
-			Name:        point.Payload["name"].(string),
-			Type:        point.Payload["type"].(string),
-			Size:        int64(point.Payload["size"].(float64)),
-			UploadTime:  time.Unix(int64(point.Payload["upload_time"].(float64)), 0),
-			Description: point.Payload["description"].(string),
+			ID:          point.Id.GetUuid(),
+			Name:        point.Payload["name"].GetStringValue(),
+			Type:        point.Payload["type"].GetStringValue(),
+			Size:        point.Payload["size"].GetIntegerValue(),
+			UploadTime:  time.Unix(point.Payload["upload_time"].GetIntegerValue(), 0),
+			Description: point.Payload["description"].GetStringValue(),
 		}
 		documents = append(documents, doc)
 	}

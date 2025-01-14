@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"WorkMate-AI/internal/models"
+	"WorkMate-AI/internal/services"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
-	"your-project/internal/services"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,7 +27,8 @@ type QueryRequest struct {
 }
 
 type QueryResponse struct {
-	Answer string `json:"answer"`
+	Answer   string           `json:"answer"`
+	Document *models.Document `json:"document,omitempty"`
 }
 
 // UploadFile 处理文件上传
@@ -84,25 +87,24 @@ func (h *QAHandler) Query(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("Transfer-Encoding", "chunked")
-	c.Header("Access-Control-Allow-Origin", "*") // 允许跨域访问
+	c.Header("Access-Control-Allow-Origin", "*")
 
-	// 创建通道接收流式响应
-	responseChan := make(chan string)
+	responseChan := make(chan services.StreamResponse)
 
-	// 在新的 goroutine 中处理查询
 	go func() {
 		if err := h.qaService.StreamingQuery(c.Request.Context(), req.Question, responseChan); err != nil {
 			c.SSEvent("error", err.Error())
 		}
 	}()
 
-	// 发送流式响应
 	c.Stream(func(w io.Writer) bool {
 		response, ok := <-responseChan
 		if !ok {
 			return false
 		}
-		c.SSEvent("message", response)
+
+		// 直接写入纯文本数据
+		fmt.Fprintf(w, "%s", string(response))
 		return true
 	})
 }

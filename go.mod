@@ -1,9 +1,10 @@
-module your-project
+module WorkMate-AI
 
 go 1.22.4
 
 require (
 	github.com/gin-gonic/gin v1.10.0
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/qdrant/go-client v1.12.0
 	github.com/tmc/langchaingo v0.1.12
@@ -32,7 +33,6 @@ require (
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/gorilla/css v1.0.0 // indirect
 	github.com/huandu/xstrings v1.3.3 // indirect

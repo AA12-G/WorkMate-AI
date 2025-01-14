@@ -533,6 +533,104 @@
             border-radius: 6px;
         }
 
+        /* 确认对话框样式 */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .confirm-dialog {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            width: 90%;
+            max-width: 400px;
+            transform: translateY(-20px);
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        }
+
+        .modal-overlay.active .confirm-dialog {
+            transform: translateY(0);
+        }
+
+        .confirm-dialog-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .confirm-dialog-header .icon {
+            color: #dc2626;
+            font-size: 1.5rem;
+            background: #fee2e2;
+            padding: 0.5rem;
+            border-radius: 8px;
+        }
+
+        .confirm-dialog-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        .confirm-dialog-content {
+            color: #666;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+
+        .confirm-dialog-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.75rem;
+        }
+
+        .confirm-dialog-actions button {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .confirm-dialog-actions .cancel-btn {
+            background: #f3f4f6;
+            color: #666;
+            border: none;
+        }
+
+        .confirm-dialog-actions .cancel-btn:hover {
+            background: #e5e7eb;
+        }
+
+        .confirm-dialog-actions .confirm-btn {
+            background: #dc2626;
+            color: white;
+            border: none;
+        }
+
+        .confirm-dialog-actions .confirm-btn:hover {
+            background: #b91c1c;
+        }
+
         /* 文档列表样式 */
         .uploaded-files {
             margin-top: 1.5rem;
@@ -629,6 +727,23 @@
     </style>
 </head>
 <body>
+    <!-- 添加确认对话框 HTML -->
+    <div class="modal-overlay" id="confirmDialog">
+        <div class="confirm-dialog">
+            <div class="confirm-dialog-header">
+                <span class="icon mdi mdi-alert"></span>
+                <h3 class="confirm-dialog-title">确认删除</h3>
+            </div>
+            <div class="confirm-dialog-content">
+                确定要删除文档 "<span id="deleteFileName"></span>" 吗？此操作无法撤销。
+            </div>
+            <div class="confirm-dialog-actions">
+                <button class="cancel-btn" onclick="hideConfirmDialog()">取消</button>
+                <button class="confirm-btn" onclick="confirmDelete()">删除</button>
+            </div>
+        </div>
+    </div>
+
     <div class="dev-badge">
         <span class="mdi mdi-code-tags"></span>
         <span>Powered by</span>
@@ -791,13 +906,39 @@
             }
         };
 
-        // 删除文档
-        function deleteDocument(docId, docName) {
-            if (confirm(`确定要删除文档 "${docName}" 吗？`)) {
-                DocumentStorage.remove(docId);
-                loadDocuments(); // 刷新文档列表
+        // 修改删除文档相关函数
+        let currentDeleteDoc = null;
+
+        function showConfirmDialog(docId, docName) {
+            currentDeleteDoc = { id: docId, name: docName };
+            document.getElementById('deleteFileName').textContent = docName;
+            document.getElementById('confirmDialog').classList.add('active');
+        }
+
+        function hideConfirmDialog() {
+            document.getElementById('confirmDialog').classList.remove('active');
+            currentDeleteDoc = null;
+        }
+
+        function confirmDelete() {
+            if (currentDeleteDoc) {
+                DocumentStorage.remove(currentDeleteDoc.id);
+                loadDocuments();
+                hideConfirmDialog();
             }
         }
+
+        // 修改删除文档函数
+        function deleteDocument(docId, docName) {
+            showConfirmDialog(docId, docName);
+        }
+
+        // 点击对话框外部关闭
+        document.getElementById('confirmDialog').addEventListener('click', function(e) {
+            if (e.target === this) {
+                hideConfirmDialog();
+            }
+        });
 
         // 显示文档列表
         function loadDocuments() {
@@ -977,9 +1118,21 @@
             const question = document.getElementById('question').value.trim();
             if (!question) return;
             
+            // 获取选中的文档 ID
+            const selectedDocs = DocumentStorage.getSelectedDocs();
+            const documentIds = selectedDocs.map(doc => doc.id);
+            
             // 如果存在正在进行的请求，立即取消
             if (currentController) {
                 currentController.abort();
+                // 移除上一个正在进行的回答
+                const lastAiMessage = document.querySelector('.ai-message:last-child');
+                if (lastAiMessage) {
+                    const answerDiv = lastAiMessage.querySelector('.answer');
+                    if (answerDiv && answerDiv.querySelector('.thinking')) {
+                        lastAiMessage.remove();
+                    }
+                }
             }
             
             const chatBox = document.getElementById('chatBox');
@@ -991,7 +1144,7 @@
             // 添加用户问题
             appendMessage('user', question);
             
-            // 添加AI回答容器，并显示思考中的状态
+            // 添加新的 AI 回答容器
             const aiMessageDiv = appendMessage('ai', `
                 <div class="thinking">
                     <span>AI 正在思考</span>
@@ -1019,48 +1172,71 @@
                     'Content-Type': 'application/json',
                     'Accept': 'text/event-stream'
                 },
-                body: JSON.stringify({ question }),
-                signal  // 添加 signal 以支持取消
+                body: JSON.stringify({ 
+                    question: question,
+                    documentIds: documentIds  // 添加选中的文档 ID
+                }),
+                signal
             }).then(response => {
                 const reader = response.body.getReader();
                 let decoder = new TextDecoder();
                 let buffer = '';
                 
+                function typeText(element, text, speed = 80) {
+                    let index = 0;
+                    element.textContent = '';
+                    
+                    function type() {
+                        if (index < text.length) {
+                            element.textContent += text[index];
+                            index++;
+                            setTimeout(type, speed);
+                        } else if (callback) {
+                            callback();
+                        }
+                    }
+                    
+                    type();
+                }
+
                 function readStream() {
                     reader.read().then(({done, value}) => {
                         if (done) {
                             if (buffer) {
-                                answerDiv.innerHTML = processMessageContent(buffer);
+                                const content = buffer.replace(/^data:\s*/, '').trim();
+                                // 使用打字机效果显示最终内容
+                                const textElement = document.createElement('p');
+                                answerDiv.innerHTML = '';
+                                answerDiv.appendChild(textElement);
+                                typeText(textElement, content, 30);
                             }
-                            currentController = null;  // 清除当前控制器
+                            currentController = null;
                             return;
                         }
 
                         const chunk = decoder.decode(value);
-                        const lines = chunk.split('\n');
+                        const newContent = chunk.replace(/^data:\s*/, '').trim();
                         
-                        for (const line of lines) {
-                            if (line.startsWith('data:')) {
-                                if (!buffer) {
-                                    answerDiv.innerHTML = '';
-                                }
-                                buffer += line.slice(5);
-                            }
+                        if (newContent) {
+                            // 累积内容
+                            buffer = (buffer || '') + newContent;
+                            
+                            // 创建新的文本元素
+                            const textElement = document.createElement('p');
+                            answerDiv.innerHTML = '';
+                            answerDiv.appendChild(textElement);
+                            
+                            // 使用打字机效果显示内容
+                            typeText(textElement, buffer, 30);
                         }
 
-                        if (isCompleteContent(buffer)) {
-                            answerDiv.innerHTML = processMessageContent(buffer);
-                        }
-                        
                         chatBox.scrollTop = chatBox.scrollHeight;
                         readStream();
                     }).catch(error => {
                         if (error.name === 'AbortError') {
-                            // 请求被取消，不需要显示错误
                             return;
                         }
-                        answerDiv.innerHTML = `
-                            <div style="color: #dc2626;">
+                        answerDiv.innerHTML = `                            <div style="color: #dc2626;">
                                 抱歉，读取响应出错：${error.message}
                             </div>
                         `;
@@ -1160,3 +1336,4 @@
     </script>
 </body>
 </html> 
+

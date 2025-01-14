@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"net/url"
+	"strings"
 
 	qdrantapi "github.com/qdrant/go-client/qdrant"
 	"github.com/tmc/langchaingo/embeddings"
@@ -18,6 +19,10 @@ type QdrantStore struct {
 }
 
 func NewQdrantStore(ctx context.Context, grpcURL, httpURL, collectionName string, embedder embeddings.Embedder) (*QdrantStore, error) {
+	if !strings.HasPrefix(httpURL, "http://") && !strings.HasPrefix(httpURL, "https://") {
+		httpURL = "http://" + httpURL
+	}
+
 	conn, err := grpc.Dial(grpcURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
@@ -25,7 +30,6 @@ func NewQdrantStore(ctx context.Context, grpcURL, httpURL, collectionName string
 
 	collections := qdrantapi.NewCollectionsClient(conn)
 
-	// 创建集合
 	_, err = collections.Create(ctx, &qdrantapi.CreateCollection{
 		CollectionName: collectionName,
 		VectorsConfig: &qdrantapi.VectorsConfig{
