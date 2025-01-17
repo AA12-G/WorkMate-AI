@@ -17,10 +17,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
-	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/documentloaders"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/ollama"
+	"github.com/tmc/langchaingo/schema"
 	"github.com/tmc/langchaingo/textsplitter"
 	"github.com/tmc/langchaingo/vectorstores"
 	"google.golang.org/grpc"
@@ -154,15 +154,83 @@ func (s *QAService) ProcessFile(ctx context.Context, filePath string) error {
 		return err
 	}
 
-	// 添加文档到向量存储
-	_, err = s.qdrant.GetStore().AddDocuments(ctx, chunkDocuments)
-	if err != nil {
-		return err
+	// 分割文档后，添加文档到向量存储
+	docs := make([]schema.Document, len(chunkDocuments))
+	docID := uuid.New().String() // 为整个文档生成一个唯一ID
+
+	fmt.Printf("处理文件: %s, 文档ID: %s\n", filePath, docID)
+
+	// 创建一个新的元数据映射
+	baseMetadata := map[string]interface{}{
+		"doc_id":   docID,
+		"filename": filepath.Base(filePath),
 	}
 
-	// 保存文档元数据
+	for i, doc := range chunkDocuments {
+		// 为每个文档块添加唯一标识
+		chunkID := fmt.Sprintf("%s_%d", docID, i)
+
+		// 创建新的元数据映射
+		metadata := make(map[string]interface{})
+
+		// 复制基础元数据
+		for k, v := range baseMetadata {
+			metadata[k] = v
+		}
+
+		// 添加块特定的元数据
+		metadata["chunk_id"] = chunkID
+		metadata["chunk_num"] = i
+		metadata["total_chunks"] = len(chunkDocuments)
+
+		// 如果原文档有页码信息，保留它
+		if doc.Metadata != nil {
+			if page, ok := doc.Metadata["page"].(int); ok {
+				metadata["page_num"] = page
+			}
+			if totalPages, ok := doc.Metadata["total_pages"].(int); ok {
+				metadata["total_pages"] = totalPages
+			}
+		}
+
+		// 打印调试信息
+		fmt.Printf("处理文档块 %d/%d, 内容长度: %d, 元数据: %+v\n",
+			i+1, len(chunkDocuments), len(doc.PageContent), metadata)
+
+		// 确保文档内容不为空
+		if len(doc.PageContent) == 0 {
+			fmt.Printf("警告：文档块 %d 内容为空\n", i+1)
+			continue
+		}
+
+		docs[i] = schema.Document{
+			PageContent: doc.PageContent,
+			Metadata:    metadata,
+		}
+	}
+
+	// 过滤掉空内容的文档
+	validDocs := make([]schema.Document, 0)
+	for _, doc := range docs {
+		if len(doc.PageContent) > 0 {
+			validDocs = append(validDocs, doc)
+		}
+	}
+
+	// 添加文档到向量存储
+	if len(validDocs) > 0 {
+		_, err = s.qdrant.GetStore().AddDocuments(ctx, validDocs)
+		if err != nil {
+			return fmt.Errorf("添加文档到向量存储失败: %v", err)
+		}
+		fmt.Printf("成功添加 %d 个有效文档块\n", len(validDocs))
+	} else {
+		return fmt.Errorf("没有有效的文档内容可以添加")
+	}
+
+	// 保存文档元数据到 DocumentMetadataCollection
 	doc := models.Document{
-		ID:          uuid.New().String(),
+		ID:          docID, // 使用相同的 docID
 		Name:        filepath.Base(filePath),
 		Type:        filepath.Ext(filePath),
 		Size:        fileInfo.Size(),
@@ -278,49 +346,188 @@ func (s *QAService) ExtractPureText(response string) string {
 	return response
 }
 
-// 添加一个新的方法来获取基于文档 ID 的检索器
+// 修改检索器实现
 func (s *QAService) getRetrieverForDocuments(documentIds []string) vectorstores.Retriever {
 	if len(documentIds) == 0 {
-		// 如果没有选择文档，使用所有文档
 		return vectorstores.ToRetriever(s.qdrant.GetStore(), 10)
 	}
 
-	// 创建过滤器
-	filter := &qdrant.Filter{
-		Should: []*qdrant.Condition{
-			{
-				ConditionOneOf: &qdrant.Condition_HasId{
-					HasId: &qdrant.HasIdCondition{
-						HasId: &qdrant.HasIdCondition_OneOf{
-							OneOf: &qdrant.RepeatedStrings{
-								Strings: documentIds,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	// 返回带过滤器的检索器
-	return s.qdrant.GetStore().AsRetriever(10, vectorstores.WithFilters(filter))
+	// 暂时直接返回基础检索器，不做过滤
+	return vectorstores.ToRetriever(s.qdrant.GetStore(), 10)
 }
 
-// 修改 Query 方法
+// 修改 Query 方法，添加错误处理
 func (s *QAService) Query(ctx context.Context, question string, documentIds []string) (string, error) {
-	retriever := s.getRetrieverForDocuments(documentIds)
+	// 如果没有选择文档，使用普通对话模式
+	if len(documentIds) == 0 {
+		// 使用基础的对话提示词
+		prompt := fmt.Sprintf(`你是一个智能助手。请回答用户的问题。
+如果你不确定答案，请诚实地说"我不确定"或"我需要更多信息"。
+不要编造或推测任何信息。
 
-	// 更新提示词
-	prompt := fmt.Sprintf("请基于选中的文档，直接回答以下问题，不要列举其他相关问题。问题是：%s", question)
+问题：%s`, question)
 
-	qa := chains.NewRetrievalQAFromLLM(s.llm, retriever)
+		response, err := s.llm.Call(ctx, prompt)
+		if err != nil {
+			fmt.Printf("生成回答时出错: %v\n", err)
+			return "抱歉，AI 助手暂时无法回答您的问题，请稍后再试。", nil
+		}
 
-	response, err := chains.Run(ctx, qa, prompt)
+		return s.ExtractPureText(response), nil
+	}
+
+	// 以下是基于知识库的问答逻辑
+	fmt.Printf("用户选择的文档IDs: %v\n", documentIds)
+
+	// 首先获取所有文档
+	allDocs, err := s.qdrant.GetStore().SimilaritySearch(ctx, "", 1000)
 	if err != nil {
-		return "", err
+		fmt.Printf("检索文档时出错: %v\n", err)
+		return "抱歉，检索文档时出现错误，请稍后再试。", nil
+	}
+
+	// 过滤文档，只保留选中的文档
+	filtered := make([]schema.Document, 0)
+	docMap := make(map[string]bool)
+	for _, id := range documentIds {
+		docMap[id] = true
+	}
+
+	// 打印所有文档的元数据，用于调试
+	fmt.Println("所有文档的元数据:")
+	for _, doc := range allDocs {
+		// 尝试从元数据中获取所有可能的 ID 字段
+		var docID interface{}
+		var ok bool
+
+		// 按优先级尝试不同的字段名
+		if docID, ok = doc.Metadata["id"]; !ok {
+			if docID, ok = doc.Metadata["doc_id"]; !ok {
+				if docID, ok = doc.Metadata["document_id"]; !ok {
+					// 如果找不到任何 ID 字段，打印完整的元数据用于调试
+					fmt.Printf("未找到ID字段的文档元数据: %+v\n", doc.Metadata)
+					continue
+				}
+			}
+		}
+
+		// 尝试将 ID 转换为字符串
+		var idStr string
+		switch v := docID.(type) {
+		case string:
+			idStr = v
+		case int:
+			idStr = fmt.Sprintf("%d", v)
+		case int64:
+			idStr = fmt.Sprintf("%d", v)
+		default:
+			fmt.Printf("未知的ID类型: %T, 值: %v\n", docID, docID)
+			continue
+		}
+
+		fmt.Printf("文档ID: %s, 元数据: %+v\n", idStr, doc.Metadata)
+
+		// 检查是否是选中的文档
+		if docMap[idStr] {
+			filtered = append(filtered, doc)
+			fmt.Printf("匹配到文档: %s, 内容长度: %d\n", idStr, len(doc.PageContent))
+		}
+	}
+
+	// 打印调试信息
+	fmt.Printf("检索到 %d 个文档，过滤后剩余 %d 个文档\n", len(allDocs), len(filtered))
+
+	if len(filtered) == 0 {
+		// 尝试直接从元数据集合中获取文档
+		docs, err := s.getDocumentsFromMetadata(ctx, documentIds)
+		if err != nil {
+			fmt.Printf("从元数据获取文档失败: %v\n", err)
+		} else if len(docs) > 0 {
+			filtered = docs
+			fmt.Printf("从元数据中找到 %d 个文档\n", len(docs))
+		}
+	}
+
+	if len(filtered) == 0 {
+		return "抱歉，在选择的文档中没有找到相关信息。", nil
+	}
+
+	// 构建上下文，按块序号排序
+	var context string
+	for _, doc := range filtered {
+		if name, ok := doc.Metadata["filename"].(string); ok {
+			context += fmt.Sprintf("\n【来自文档：%s】\n", name)
+		}
+		context += doc.PageContent + "\n"
+	}
+
+	// 构建更明确的提示词
+	prompt := fmt.Sprintf(`你是一个知识库问答助手。请仔细阅读以下内容，并基于这些内容回答问题。
+如果内容中没有相关信息，请直接回复："抱歉，在当前内容中没有找到相关信息。"
+不要编造或推测任何信息，只回答内容中明确提到的信息。
+
+参考内容：
+%s
+
+问题：%s
+
+请基于上述参考内容回答这个问题。如果内容中包含答案，请详细解答；如果没有相关信息，请明确指出。`, context, question)
+
+	response, err := s.llm.Call(ctx, prompt)
+	if err != nil {
+		fmt.Printf("生成回答时出错: %v\n", err)
+		return "抱歉，AI 助手暂时无法回答您的问题，请稍后再试。", nil
 	}
 
 	return s.ExtractPureText(response), nil
+}
+
+// 添加新的辅助方法
+func (s *QAService) getDocumentsFromMetadata(ctx context.Context, documentIds []string) ([]schema.Document, error) {
+	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	client := qdrant.NewPointsClient(conn)
+	var documents []schema.Document
+
+	for _, id := range documentIds {
+		request := &qdrant.GetPoints{
+			CollectionName: s.config.CollectionName,
+			Ids: []*qdrant.PointId{
+				{
+					PointIdOptions: &qdrant.PointId_Uuid{
+						Uuid: id,
+					},
+				},
+			},
+		}
+
+		response, err := client.Get(ctx, request)
+		if err != nil {
+			fmt.Printf("获取文档 %s 失败: %v\n", id, err)
+			continue
+		}
+
+		for _, point := range response.Result {
+			if point.Payload != nil {
+				content := point.Payload["content"].GetStringValue()
+				if content != "" {
+					doc := schema.Document{
+						PageContent: content,
+						Metadata: map[string]interface{}{
+							"doc_id": id,
+						},
+					}
+					documents = append(documents, doc)
+				}
+			}
+		}
+	}
+
+	return documents, nil
 }
 
 // StreamResponse 结构体修改
@@ -328,31 +535,117 @@ type StreamResponse string
 
 // StreamingQuery 方法修改
 func (s *QAService) StreamingQuery(ctx context.Context, question string, documentIds []string, responseChan chan StreamResponse) error {
-	// 获取基于选中文档的检索器
-	retriever := s.getRetrieverForDocuments(documentIds)
+	// 如果没有选择文档，使用普通对话模式
+	if len(documentIds) == 0 {
+		go func() {
+			defer close(responseChan)
 
-	// 添加提示词
-	prompt := fmt.Sprintf("请基于选中的文档，直接回答以下问题，不要列举其他相关问题。问题是：%s", question)
+			prompt := fmt.Sprintf(`你是一个智能助手。请回答用户的问题。
+如果你不确定答案，请诚实地说"我不确定"或"我需要更多信息"。
+不要编造或推测任何信息。
 
-	qa := chains.NewRetrievalQAFromLLM(s.llm, retriever)
+问题：%s`, question)
+
+			response, err := s.llm.Call(ctx, prompt)
+			if err != nil {
+				fmt.Printf("生成回答时出错: %v\n", err)
+				select {
+				case <-ctx.Done():
+				case responseChan <- StreamResponse("抱歉，AI 助手暂时无法回答您的问题，请稍后再试。"):
+				}
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+			case responseChan <- StreamResponse(s.ExtractPureText(response)):
+			}
+		}()
+		return nil
+	}
+
+	// 以下是基于知识库的问答逻辑
+	fmt.Printf("用户选择的文档IDs: %v\n", documentIds)
 
 	go func() {
 		defer close(responseChan)
 
-		answer, err := chains.Run(ctx, qa, prompt) // 使用带提示词的问题
+		// 使用 SimilaritySearch 而不是 GetRelevantDocuments
+		allDocs, err := s.qdrant.GetStore().SimilaritySearch(ctx, question, 100)
 		if err != nil {
+			fmt.Printf("检索文档时出错: %v\n", err)
 			select {
 			case <-ctx.Done():
-			case responseChan <- StreamResponse("Error: " + err.Error()):
+			case responseChan <- StreamResponse("抱歉，检索文档时出现错误，请稍后再试。"):
 			}
 			return
 		}
 
-		pureText := s.ExtractPureText(answer)
+		// 过滤文档，只保留选中的文档
+		filtered := make([]schema.Document, 0)
+		docMap := make(map[string]bool)
+		for _, id := range documentIds {
+			docMap[id] = true
+		}
+
+		for _, doc := range allDocs {
+			docID, ok := doc.Metadata["doc_id"].(string)
+			if !ok {
+				continue
+			}
+			if docMap[docID] {
+				filtered = append(filtered, doc)
+				fmt.Printf("匹配到文档: %s, 内容长度: %d\n", docID, len(doc.PageContent))
+			}
+		}
+
+		// 打印调试信息
+		fmt.Printf("检索到 %d 个文档，过滤后剩余 %d 个文档\n", len(allDocs), len(filtered))
+
+		if len(filtered) == 0 {
+			select {
+			case <-ctx.Done():
+			case responseChan <- StreamResponse("抱歉，在选择的文档中没有找到相关信息。"):
+			}
+			return
+		}
+
+		// 构建上下文
+		var context string
+		for _, doc := range filtered {
+			if name, ok := doc.Metadata["filename"].(string); ok {
+				context += fmt.Sprintf("\n【来自文档：%s】\n", name)
+			}
+			context += doc.PageContent + "\n"
+		}
+
+		// 构建提示词
+		prompt := fmt.Sprintf(`你是一个知识库问答助手。请仔细阅读以下内容，并基于这些内容回答问题。
+如果内容中没有相关信息，请直接回复："抱歉，在当前内容中没有找到相关信息。"
+不要编造或推测任何信息，只回答内容中明确提到的信息。
+
+参考内容：
+%s
+
+问题：%s
+
+请基于上述参考内容回答这个问题。如果内容中包含答案，请详细解答；如果没有相关信息，请明确指出。`, context, question)
+
+		// 生成回答
+		response, err := s.llm.Call(ctx, prompt)
+		if err != nil {
+			fmt.Printf("生成回答时出错: %v\n", err)
+			select {
+			case <-ctx.Done():
+			case responseChan <- StreamResponse("抱歉，AI 助手暂时无法回答您的问题，请稍后再试。"):
+			}
+			return
+		}
+
 		select {
 		case <-ctx.Done():
-			return
-		case responseChan <- StreamResponse(pureText):
+		case responseChan <- StreamResponse(s.ExtractPureText(response)):
+			fmt.Printf("已发送回答\n")
 		}
 	}()
 

@@ -724,6 +724,21 @@
             opacity: 1;
             background: none;
         }
+
+        /* 添加提示框样式 */
+        .alert-box {
+            position: fixed;
+            bottom: 100px; /* 距离底部 100px */
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            display: none;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
@@ -841,6 +856,9 @@
     <footer class="footer">
         <p>Powered by <a href="https://github.com/AA12-G" target="_blank">@AA12-G</a> | v1.0.0</p>
     </footer>
+
+    <!-- 提示框 -->
+    <div id="alertBox" class="alert-box"></div>
 
     <script>
         // 显示状态信息
@@ -1116,7 +1134,10 @@
         // 修改 sendQuestion 函数
         function sendQuestion() {
             const question = document.getElementById('question').value.trim();
-            if (!question) return;
+            if (!question) {
+                showAlert('请输入一个问题后再发送。');
+                return;
+            }
             
             // 获取选中的文档 ID
             const selectedDocs = DocumentStorage.getSelectedDocs();
@@ -1191,8 +1212,6 @@
                             element.textContent += text[index];
                             index++;
                             setTimeout(type, speed);
-                        } else if (callback) {
-                            callback();
                         }
                     }
                     
@@ -1236,7 +1255,8 @@
                         if (error.name === 'AbortError') {
                             return;
                         }
-                        answerDiv.innerHTML = `                            <div style="color: #dc2626;">
+                        answerDiv.innerHTML = `
+                            <div style="color: #dc2626;">
                                 抱歉，读取响应出错：${error.message}
                             </div>
                         `;
@@ -1333,6 +1353,16 @@
             fileInput.files = dataTransfer.files;
             uploadFile();
         });
+
+        // 显示自定义提示框
+        function showAlert(message) {
+            const alertBox = document.getElementById('alertBox');
+            alertBox.textContent = message;
+            alertBox.style.display = 'block';
+            setTimeout(() => {
+                alertBox.style.display = 'none';
+            }, 3000); // 3秒后自动隐藏
+        }
     </script>
 </body>
 </html> 

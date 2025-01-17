@@ -23,7 +23,8 @@ func NewQAHandler(qaService *services.QAService) *QAHandler {
 }
 
 type QueryRequest struct {
-	Question string `json:"question" binding:"required"`
+	Question    string   `json:"question" binding:"required"`
+	DocumentIds []string `json:"documentIds"`
 }
 
 type QueryResponse struct {
@@ -82,8 +83,8 @@ func (h *QAHandler) Query(c *gin.Context) {
 		return
 	}
 
-	// 设置 SSE 头部
-	c.Header("Content-Type", "text/event-stream")
+	// 设置响应头
+	c.Header("Content-Type", "text/plain")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("Transfer-Encoding", "chunked")
@@ -92,7 +93,7 @@ func (h *QAHandler) Query(c *gin.Context) {
 	responseChan := make(chan services.StreamResponse)
 
 	go func() {
-		if err := h.qaService.StreamingQuery(c.Request.Context(), req.Question, responseChan); err != nil {
+		if err := h.qaService.StreamingQuery(c.Request.Context(), req.Question, req.DocumentIds, responseChan); err != nil {
 			c.SSEvent("error", err.Error())
 		}
 	}()
@@ -102,8 +103,6 @@ func (h *QAHandler) Query(c *gin.Context) {
 		if !ok {
 			return false
 		}
-
-		// 直接写入纯文本数据
 		fmt.Fprintf(w, "%s", string(response))
 		return true
 	})
