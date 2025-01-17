@@ -160,48 +160,22 @@ func (s *QAService) ProcessFile(ctx context.Context, filePath string) error {
 
 	fmt.Printf("处理文件: %s, 文档ID: %s\n", filePath, docID)
 
-	// 创建一个新的元数据映射
-	baseMetadata := map[string]interface{}{
-		"doc_id":   docID,
-		"filename": filepath.Base(filePath),
-	}
-
 	for i, doc := range chunkDocuments {
 		// 为每个文档块添加唯一标识
 		chunkID := fmt.Sprintf("%s_%d", docID, i)
 
 		// 创建新的元数据映射
-		metadata := make(map[string]interface{})
-
-		// 复制基础元数据
-		for k, v := range baseMetadata {
-			metadata[k] = v
-		}
-
-		// 添加块特定的元数据
-		metadata["chunk_id"] = chunkID
-		metadata["chunk_num"] = i
-		metadata["total_chunks"] = len(chunkDocuments)
-
-		// 如果原文档有页码信息，保留它
-		if doc.Metadata != nil {
-			if page, ok := doc.Metadata["page"].(int); ok {
-				metadata["page_num"] = page
-			}
-			if totalPages, ok := doc.Metadata["total_pages"].(int); ok {
-				metadata["total_pages"] = totalPages
-			}
+		metadata := map[string]interface{}{
+			"doc_id":       docID,
+			"chunk_id":     chunkID,
+			"filename":     filepath.Base(filePath),
+			"chunk_num":    i,
+			"total_chunks": len(chunkDocuments),
 		}
 
 		// 打印调试信息
 		fmt.Printf("处理文档块 %d/%d, 内容长度: %d, 元数据: %+v\n",
 			i+1, len(chunkDocuments), len(doc.PageContent), metadata)
-
-		// 确保文档内容不为空
-		if len(doc.PageContent) == 0 {
-			fmt.Printf("警告：文档块 %d 内容为空\n", i+1)
-			continue
-		}
 
 		docs[i] = schema.Document{
 			PageContent: doc.PageContent,
@@ -219,7 +193,7 @@ func (s *QAService) ProcessFile(ctx context.Context, filePath string) error {
 
 	// 添加文档到向量存储
 	if len(validDocs) > 0 {
-		_, err = s.qdrant.GetStore().AddDocuments(ctx, validDocs)
+		_, err := s.qdrant.GetStore().AddDocuments(ctx, validDocs)
 		if err != nil {
 			return fmt.Errorf("添加文档到向量存储失败: %v", err)
 		}
@@ -228,99 +202,7 @@ func (s *QAService) ProcessFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("没有有效的文档内容可以添加")
 	}
 
-	// 保存文档元数据到 DocumentMetadataCollection
-	doc := models.Document{
-		ID:          docID, // 使用相同的 docID
-		Name:        filepath.Base(filePath),
-		Type:        filepath.Ext(filePath),
-		Size:        fileInfo.Size(),
-		UploadTime:  time.Now(),
-		Description: "",
-	}
-
-	// 创建 gRPC 客户端
-	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("连接 Qdrant 失败: %v", err)
-	}
-	defer conn.Close()
-
-	// 首先创建集合
-	collectionsClient := qdrant.NewCollectionsClient(conn)
-	_, err = collectionsClient.Create(ctx, &qdrant.CreateCollection{
-		CollectionName: s.config.DocumentMetadataCollection,
-		VectorsConfig: &qdrant.VectorsConfig{
-			Config: &qdrant.VectorsConfig_Params{
-				Params: &qdrant.VectorParams{
-					Size:     3072,
-					Distance: qdrant.Distance_Cosine,
-				},
-			},
-		},
-	})
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		return fmt.Errorf("创建集合失败: %v", err)
-	}
-
-	// 使用 Points 客户端
-	pointsClient := qdrant.NewPointsClient(conn)
-
-	vector := make([]float32, 3072)
-	for i := range vector {
-		vector[i] = rand.Float32()
-	}
-
-	payload := make(map[string]*qdrant.Value)
-	payload["name"] = &qdrant.Value{
-		Kind: &qdrant.Value_StringValue{
-			StringValue: doc.Name,
-		},
-	}
-	payload["type"] = &qdrant.Value{
-		Kind: &qdrant.Value_StringValue{
-			StringValue: doc.Type,
-		},
-	}
-	payload["size"] = &qdrant.Value{
-		Kind: &qdrant.Value_IntegerValue{
-			IntegerValue: doc.Size,
-		},
-	}
-	payload["upload_time"] = &qdrant.Value{
-		Kind: &qdrant.Value_IntegerValue{
-			IntegerValue: doc.UploadTime.Unix(),
-		},
-	}
-	payload["description"] = &qdrant.Value{
-		Kind: &qdrant.Value_StringValue{
-			StringValue: doc.Description,
-		},
-	}
-
-	points := []*qdrant.PointStruct{
-		{
-			Id: &qdrant.PointId{
-				PointIdOptions: &qdrant.PointId_Uuid{
-					Uuid: doc.ID,
-				},
-			},
-			Vectors: &qdrant.Vectors{
-				VectorsOptions: &qdrant.Vectors_Vector{
-					Vector: &qdrant.Vector{
-						Data: vector,
-					},
-				},
-			},
-			Payload: payload,
-		},
-	}
-
-	_, err = pointsClient.Upsert(ctx, &qdrant.UpsertPoints{
-		CollectionName: s.config.DocumentMetadataCollection,
-		Points:         points,
-	})
-
-	return err
+	return nil
 }
 
 func (s *QAService) ExtractPureText(response string) string {
@@ -358,28 +240,9 @@ func (s *QAService) getRetrieverForDocuments(documentIds []string) vectorstores.
 
 // 修改 Query 方法，添加错误处理
 func (s *QAService) Query(ctx context.Context, question string, documentIds []string) (string, error) {
-	// 如果没有选择文档，使用普通对话模式
-	if len(documentIds) == 0 {
-		// 使用基础的对话提示词
-		prompt := fmt.Sprintf(`你是一个智能助手。请回答用户的问题。
-如果你不确定答案，请诚实地说"我不确定"或"我需要更多信息"。
-不要编造或推测任何信息。
-
-问题：%s`, question)
-
-		response, err := s.llm.Call(ctx, prompt)
-		if err != nil {
-			fmt.Printf("生成回答时出错: %v\n", err)
-			return "抱歉，AI 助手暂时无法回答您的问题，请稍后再试。", nil
-		}
-
-		return s.ExtractPureText(response), nil
-	}
-
-	// 以下是基于知识库的问答逻辑
 	fmt.Printf("用户选择的文档IDs: %v\n", documentIds)
 
-	// 首先获取所有文档
+	// 获取所有文档
 	allDocs, err := s.qdrant.GetStore().SimilaritySearch(ctx, "", 1000)
 	if err != nil {
 		fmt.Printf("检索文档时出错: %v\n", err)
@@ -396,41 +259,17 @@ func (s *QAService) Query(ctx context.Context, question string, documentIds []st
 	// 打印所有文档的元数据，用于调试
 	fmt.Println("所有文档的元数据:")
 	for _, doc := range allDocs {
-		// 尝试从元数据中获取所有可能的 ID 字段
-		var docID interface{}
-		var ok bool
-
-		// 按优先级尝试不同的字段名
-		if docID, ok = doc.Metadata["id"]; !ok {
-			if docID, ok = doc.Metadata["doc_id"]; !ok {
-				if docID, ok = doc.Metadata["document_id"]; !ok {
-					// 如果找不到任何 ID 字段，打印完整的元数据用于调试
-					fmt.Printf("未找到ID字段的文档元数据: %+v\n", doc.Metadata)
-					continue
-				}
-			}
-		}
-
-		// 尝试将 ID 转换为字符串
-		var idStr string
-		switch v := docID.(type) {
-		case string:
-			idStr = v
-		case int:
-			idStr = fmt.Sprintf("%d", v)
-		case int64:
-			idStr = fmt.Sprintf("%d", v)
-		default:
-			fmt.Printf("未知的ID类型: %T, 值: %v\n", docID, docID)
+		docID, ok := doc.Metadata["doc_id"].(string)
+		if !ok {
+			fmt.Printf("文档缺少doc_id: %+v\n", doc.Metadata)
 			continue
 		}
 
-		fmt.Printf("文档ID: %s, 元数据: %+v\n", idStr, doc.Metadata)
+		fmt.Printf("文档ID: %s, 元数据: %+v\n", docID, doc.Metadata)
 
-		// 检查是否是选中的文档
-		if docMap[idStr] {
+		if docMap[docID] {
 			filtered = append(filtered, doc)
-			fmt.Printf("匹配到文档: %s, 内容长度: %d\n", idStr, len(doc.PageContent))
+			fmt.Printf("匹配到文档: %s, 内容长度: %d\n", docID, len(doc.PageContent))
 		}
 	}
 
@@ -438,21 +277,10 @@ func (s *QAService) Query(ctx context.Context, question string, documentIds []st
 	fmt.Printf("检索到 %d 个文档，过滤后剩余 %d 个文档\n", len(allDocs), len(filtered))
 
 	if len(filtered) == 0 {
-		// 尝试直接从元数据集合中获取文档
-		docs, err := s.getDocumentsFromMetadata(ctx, documentIds)
-		if err != nil {
-			fmt.Printf("从元数据获取文档失败: %v\n", err)
-		} else if len(docs) > 0 {
-			filtered = docs
-			fmt.Printf("从元数据中找到 %d 个文档\n", len(docs))
-		}
-	}
-
-	if len(filtered) == 0 {
 		return "抱歉，在选择的文档中没有找到相关信息。", nil
 	}
 
-	// 构建上下文，按块序号排序
+	// 构建上下文
 	var context string
 	for _, doc := range filtered {
 		if name, ok := doc.Metadata["filename"].(string); ok {
@@ -461,7 +289,7 @@ func (s *QAService) Query(ctx context.Context, question string, documentIds []st
 		context += doc.PageContent + "\n"
 	}
 
-	// 构建更明确的提示词
+	// 构建提示词
 	prompt := fmt.Sprintf(`你是一个知识库问答助手。请仔细阅读以下内容，并基于这些内容回答问题。
 如果内容中没有相关信息，请直接回复："抱歉，在当前内容中没有找到相关信息。"
 不要编造或推测任何信息，只回答内容中明确提到的信息。
