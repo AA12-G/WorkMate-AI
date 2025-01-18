@@ -2,87 +2,58 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"WorkMate-AI/config"
 	"WorkMate-AI/internal/models"
-	"WorkMate-AI/pkg/vectorstore"
 
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
-	"github.com/tmc/langchaingo/documentloaders"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/ollama"
-	"github.com/tmc/langchaingo/schema"
 	"github.com/tmc/langchaingo/textsplitter"
-	"github.com/tmc/langchaingo/vectorstores"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type QAService struct {
 	llm    llms.LLM
-	qdrant *vectorstore.QdrantStore
 	config *config.Config
 }
 
-// 创建一个自定义的 embedder
-type LocalEmbedder struct {
-	llm llms.LLM
+// 文档块结构
+type DocumentChunk struct {
+	ID       string
+	DocID    string
+	Content  string
+	Filename string
+	ChunkNum int
 }
 
-// EmbedDocuments 实现 embeddings.Embedder 接口
-func (e *LocalEmbedder) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
-	// 使用随机数生成器
-	embeddings := make([][]float32, len(texts))
-	for i := range texts {
-		vector := make([]float32, 3072)
-		for j := range vector {
-			vector[j] = rand.Float32() // 添加随机值
-		}
-		embeddings[i] = vector
-	}
-	return embeddings, nil
-}
-
-// EmbedQuery 实现 embeddings.Embedder 接口
-func (e *LocalEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	vector := make([]float32, 3072)
-	for i := range vector {
-		vector[i] = rand.Float32() // 添加随机值
-	}
-	return vector, nil
+// StreamResponse 定义流式响应的结构
+type StreamResponse struct {
+	Content string `json:"content"`
 }
 
 func NewQAService(cfg *config.Config) (*QAService, error) {
-	var llmInstance llms.LLM
-	var err error
-
-	// 使用 Ollama 作为 LLM
-	llmInstance, err = ollama.New(
+	llmInstance, err := ollama.New(
 		ollama.WithModel(cfg.OllamaModel),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 使用本地 embedder
-	embedder := &LocalEmbedder{llm: llmInstance}
-
-	// 初始化 Qdrant 存储
-	qdrantStore, err := vectorstore.NewQdrantStore(
-		context.Background(),
-		cfg.QdrantGRPCURL,
-		cfg.QdrantHTTPURL,
-		cfg.CollectionName,
-		embedder,
+		ollama.WithSystemPrompt(`你是一个严格的知识库问答助手。你必须遵守以下规则：
+1. 只能使用提供的文档内容回答问题
+2. 回答必须以"根据文档《xxx》"开头
+3. 不允许编造或推测任何未在文档中明确提到的信息
+4. 如果文档中没有相关信息，必须明确说明
+5. 保持回答的准确性和客观性
+6. 直接引用文档中的原文，不要随意改写
+7. 如果信息来自多个文档，需要分别标明来源`),
 	)
 	if err != nil {
 		return nil, err
@@ -90,159 +61,271 @@ func NewQAService(cfg *config.Config) (*QAService, error) {
 
 	return &QAService{
 		llm:    llmInstance,
-		qdrant: qdrantStore,
 		config: cfg,
 	}, nil
 }
 
-// 修改辅助函数来处理 Qdrant URL
-func getQdrantHostAndPort(url string) (string, int) {
-	// 移除 http:// 或 https:// 前缀
-	url = strings.TrimPrefix(url, "http://")
-	url = strings.TrimPrefix(url, "https://")
-
-	// 如果 URL 包含端口号，分离主机名和端口
-	if strings.Contains(url, ":") {
-		parts := strings.Split(url, ":")
-		if len(parts) == 2 {
-			// 只取第一个冒号前后的部分
-			return parts[0], 6333
-		}
-	}
-
-	// 如果没有端口号或格式不正确，返回默认值
-	return url, 6333
-}
-
-// ProcessFile 处理上传的文件
+// ProcessFile 处理文件并存储到 Qdrant
 func (s *QAService) ProcessFile(ctx context.Context, filePath string) error {
-	// 打开文件
-	f, err := os.Open(filePath)
+	fmt.Printf("开始处理文件: %s\n", filePath)
+
+	// 使用更大的批次大小来减少网络请求
+	batchSize := 20
+	waitTrue := true
+
+	// 连接到 Qdrant
+	conn, err := grpc.Dial(s.config.QdrantGRPCURL,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(50*1024*1024)),
+	)
 	if err != nil {
-		return err
+		return fmt.Errorf("连接 Qdrant 失败: %v", err)
 	}
-	defer f.Close()
+	defer conn.Close()
 
-	fileInfo, err := f.Stat()
+	// 检查并创建集合
+	collectionsClient := qdrant.NewCollectionsClient(conn)
+	_, err = collectionsClient.Get(ctx, &qdrant.GetCollectionInfoRequest{
+		CollectionName: s.config.CollectionName,
+	})
 	if err != nil {
-		return err
-	}
-
-	// 根据文件类型选择合适的加载器
-	var loader documentloaders.Loader
-	ext := strings.ToLower(path.Ext(filePath))
-
-	switch ext {
-	case ".pdf":
-		loader = documentloaders.NewPDF(f, fileInfo.Size())
-	case ".txt", ".md":
-		loader = documentloaders.NewText(f)
-	case ".csv":
-		loader = documentloaders.NewCSV(f)
-	case ".doc", ".docx":
-		return fmt.Errorf("暂不支持 Word 文档")
-	default:
-		return fmt.Errorf("不支持的文件类型: %s", ext)
-	}
-
-	// 分割文档
-	chunkDocuments, err := loader.LoadAndSplit(ctx, textsplitter.NewRecursiveCharacter(
-		textsplitter.WithChunkSize(2000),
-		textsplitter.WithChunkOverlap(200),
-	))
-	if err != nil {
-		return err
-	}
-
-	// 分割文档后，添加文档到向量存储
-	docs := make([]schema.Document, len(chunkDocuments))
-	docID := uuid.New().String() // 为整个文档生成一个唯一ID
-
-	fmt.Printf("处理文件: %s, 文档ID: %s\n", filePath, docID)
-
-	for i, doc := range chunkDocuments {
-		// 为每个文档块添加唯一标识
-		chunkID := fmt.Sprintf("%s_%d", docID, i)
-
-		// 创建新的元数据映射
-		metadata := map[string]interface{}{
-			"doc_id":       docID,
-			"chunk_id":     chunkID,
-			"filename":     filepath.Base(filePath),
-			"chunk_num":    i,
-			"total_chunks": len(chunkDocuments),
-		}
-
-		// 打印调试信息
-		fmt.Printf("处理文档块 %d/%d, 内容长度: %d, 元数据: %+v\n",
-			i+1, len(chunkDocuments), len(doc.PageContent), metadata)
-
-		docs[i] = schema.Document{
-			PageContent: doc.PageContent,
-			Metadata:    metadata,
+		if strings.Contains(err.Error(), "not found") {
+			// 创建集合
+			createRequest := &qdrant.CreateCollection{
+				CollectionName: s.config.CollectionName,
+				VectorsConfig: &qdrant.VectorsConfig{
+					Config: &qdrant.VectorsConfig_Params{
+						Params: &qdrant.VectorParams{
+							Size:     3072,
+							Distance: qdrant.Distance_Cosine,
+						},
+					},
+				},
+			}
+			_, err = collectionsClient.Create(ctx, createRequest)
+			if err != nil {
+				return fmt.Errorf("创建集合失败: %v", err)
+			}
+			fmt.Printf("成功创建集合: %s\n", s.config.CollectionName)
+		} else {
+			return fmt.Errorf("检查集合失败: %v", err)
 		}
 	}
 
-	// 过滤掉空内容的文档
-	validDocs := make([]schema.Document, 0)
-	for _, doc := range docs {
-		if len(doc.PageContent) > 0 {
-			validDocs = append(validDocs, doc)
-		}
+	// 使用 goroutine 并发处理文本分块
+	type chunkResult struct {
+		chunks []string
+		err    error
 	}
+	chunkChan := make(chan chunkResult)
 
-	// 添加文档到向量存储
-	if len(validDocs) > 0 {
-		_, err := s.qdrant.GetStore().AddDocuments(ctx, validDocs)
+	go func() {
+		// 读取和处理文件
+		content, err := os.ReadFile(filePath)
 		if err != nil {
-			return fmt.Errorf("添加文档到向量存储失败: %v", err)
+			chunkChan <- chunkResult{err: fmt.Errorf("读取文件失败: %v", err)}
+			return
 		}
-		fmt.Printf("成功添加 %d 个有效文档块\n", len(validDocs))
-	} else {
-		return fmt.Errorf("没有有效的文档内容可以添加")
+
+		// 清理和分割文本
+		textContent := cleanText(string(content))
+		if !isValidUTF8(textContent) {
+			chunkChan <- chunkResult{err: fmt.Errorf("文件内容包含无效的字符编码")}
+			return
+		}
+
+		splitter := textsplitter.NewRecursiveCharacter(
+			textsplitter.WithChunkSize(2000),
+			textsplitter.WithChunkOverlap(200),
+		)
+
+		chunks, err := splitter.SplitText(textContent)
+		if err != nil {
+			chunkChan <- chunkResult{err: fmt.Errorf("分割文本失败: %v", err)}
+			return
+		}
+
+		// 过滤空白块
+		validChunks := make([]string, 0, len(chunks))
+		for _, chunk := range chunks {
+			if cleaned := strings.TrimSpace(chunk); cleaned != "" {
+				validChunks = append(validChunks, cleaned)
+			}
+		}
+
+		chunkChan <- chunkResult{chunks: validChunks}
+	}()
+
+	// 同时连接到 Qdrant
+	conn, err = grpc.Dial(s.config.QdrantGRPCURL,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(50*1024*1024)), // 增加消息大小限制
+	)
+	if err != nil {
+		return fmt.Errorf("连接 Qdrant 失败: %v", err)
+	}
+	defer conn.Close()
+
+	// 等待文本处理结果
+	result := <-chunkChan
+	if result.err != nil {
+		return result.err
 	}
 
+	validChunks := result.chunks
+	if len(validChunks) == 0 {
+		return fmt.Errorf("没有提取到有效内容")
+	}
+
+	fmt.Printf("成功提取 %d 个有效文档块\n", len(validChunks))
+
+	// 生成文档ID
+	docID := uuid.New().String()
+	filename := filepath.Base(filePath)
+
+	// 预先生成所有向量
+	vectors := make([][]float32, len(validChunks))
+	for i := range vectors {
+		vectors[i] = make([]float32, 3072)
+		for j := range vectors[i] {
+			vectors[i][j] = rand.Float32()
+		}
+	}
+
+	// 使用工作池并发上传
+	workerCount := 3
+	workChan := make(chan int, len(validChunks))
+	errChan := make(chan error, workerCount)
+	var wg sync.WaitGroup
+
+	// 启动工作协程
+	for w := 0; w < workerCount; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pointsClient := qdrant.NewPointsClient(conn)
+
+			for i := range workChan {
+				end := i + batchSize
+				if end > len(validChunks) {
+					end = i + (len(validChunks) - i)
+				}
+
+				batchPoints := make([]*qdrant.PointStruct, 0, end-i)
+				for j := i; j < end; j++ {
+					// 为每个块生成唯一的 UUID
+					chunkID := uuid.New().String()
+					point := &qdrant.PointStruct{
+						Id: &qdrant.PointId{
+							PointIdOptions: &qdrant.PointId_Uuid{
+								Uuid: chunkID,
+							},
+						},
+						Vectors: &qdrant.Vectors{
+							VectorsOptions: &qdrant.Vectors_Vector{
+								Vector: &qdrant.Vector{
+									Data: vectors[j],
+								},
+							},
+						},
+						Payload: map[string]*qdrant.Value{
+							"doc_id":    {Kind: &qdrant.Value_StringValue{StringValue: docID}},
+							"content":   {Kind: &qdrant.Value_StringValue{StringValue: validChunks[j]}},
+							"filename":  {Kind: &qdrant.Value_StringValue{StringValue: filename}},
+							"chunk_num": {Kind: &qdrant.Value_IntegerValue{IntegerValue: int64(j)}},
+							"chunk_id":  {Kind: &qdrant.Value_StringValue{StringValue: chunkID}}, // 添加 chunk_id 到 payload
+						},
+					}
+					batchPoints = append(batchPoints, point)
+				}
+
+				// 重试逻辑
+				var uploadErr error
+				for retry := 0; retry < 3; retry++ {
+					_, uploadErr = pointsClient.Upsert(ctx, &qdrant.UpsertPoints{
+						CollectionName: s.config.CollectionName,
+						Points:         batchPoints,
+						Wait:           &waitTrue,
+					})
+					if uploadErr == nil {
+						fmt.Printf("成功上传批次 %d-%d\n", i, end-1)
+						break
+					}
+					if retry < 2 {
+						time.Sleep(time.Second * time.Duration(retry+1))
+					}
+				}
+				if uploadErr != nil {
+					errChan <- fmt.Errorf("上传批次 %d-%d 失败: %v", i, end-1, uploadErr)
+					return
+				}
+			}
+		}()
+	}
+
+	// 分发工作
+	for i := 0; i < len(validChunks); i += batchSize {
+		workChan <- i
+	}
+	close(workChan)
+
+	// 等待所有工作完成
+	wg.Wait()
+	close(errChan)
+
+	// 检查错误
+	for err := range errChan {
+		if err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("成功处理文件 %s，文档ID: %s，共 %d 个块\n", filename, docID, len(validChunks))
 	return nil
 }
 
-func (s *QAService) ExtractPureText(response string) string {
-	// 检查是否是 JSON 格式的响应
-	if strings.HasPrefix(strings.TrimSpace(response), "{") {
-		var result map[string]interface{}
-		if err := json.Unmarshal([]byte(response), &result); err == nil {
-			// 检查是否存在 "content" 字段
-			if content, ok := result["content"].(string); ok {
-				// 只返回第一个问题的答案
-				answers := strings.Split(content, "Q：")
-				if len(answers) > 1 {
-					// 返回第一个答案，去掉 "A：" 前缀
-					firstAnswer := strings.Split(answers[1], "A：")
-					if len(firstAnswer) > 1 {
-						return strings.TrimSpace(firstAnswer[1])
-					}
-				}
-				return content
-			}
+// cleanText 清理文本内容
+func cleanText(text string) string {
+	// 1. 移除不可打印字符，但保留基本标点和空白
+	var result strings.Builder
+	for _, r := range text {
+		if unicode.IsPrint(r) || unicode.IsSpace(r) || unicode.IsPunct(r) {
+			result.WriteRune(r)
 		}
 	}
-	return response
+	text = result.String()
+
+	// 2. 规范化空白字符，但保留段落
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.Join(strings.Fields(line), " ")
+	}
+	text = strings.Join(lines, "\n")
+
+	// 3. 移除连续的空行
+	text = strings.ReplaceAll(text, "\n\n\n", "\n\n")
+
+	// 4. 移除 UTF-8 BOM
+	text = strings.TrimPrefix(text, "\uFEFF")
+
+	return text
 }
 
-// 修改检索器实现
-func (s *QAService) getRetrieverForDocuments(documentIds []string) vectorstores.Retriever {
-	if len(documentIds) == 0 {
-		return vectorstores.ToRetriever(s.qdrant.GetStore(), 10)
+// 验证 UTF-8
+func isValidUTF8(s string) bool {
+	return utf8.ValidString(s)
+}
+
+// Query 查询文档
+func (s *QAService) Query(ctx context.Context, question string, documentIds []string) (string, error) {
+	// 检查是否是普通对话或没有选择文档
+	if isGeneralConversation(question) || len(documentIds) == 0 {
+		return handleGeneralConversation(question), nil
 	}
 
-	// 暂时直接返回基础检索器，不做过滤
-	return vectorstores.ToRetriever(s.qdrant.GetStore(), 10)
-}
+	fmt.Printf("开始查询，问题：%s，文档IDs：%v\n", question, documentIds)
 
-// 修改 Query 方法，添加错误处理
-func (s *QAService) Query(ctx context.Context, question string, documentIds []string) (string, error) {
-	fmt.Printf("用户选择的文档IDs: %v\n", documentIds)
-
-	// 创建 gRPC 连接
+	// 连接到 Qdrant
 	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return "", fmt.Errorf("连接 Qdrant 失败: %v", err)
@@ -251,309 +334,317 @@ func (s *QAService) Query(ctx context.Context, question string, documentIds []st
 
 	client := qdrant.NewPointsClient(conn)
 
-	// 使用 Scroll API 获取所有文档
-	var limit uint32 = 100
-	var filtered []schema.Document
-	var offset *qdrant.PointId = nil
-
-	// 创建文档ID的映射，方便查找
-	docMap := make(map[string]bool)
-	for _, id := range documentIds {
-		docMap[id] = true
-	}
-
-	for {
-		request := &qdrant.ScrollPoints{
-			CollectionName: s.config.CollectionName,
-			Limit:          &limit,
-			Offset:         offset,
-			WithPayload: &qdrant.WithPayloadSelector{
-				SelectorOptions: &qdrant.WithPayloadSelector_Enable{
-					Enable: true,
+	// 构建查询条件
+	var conditions []*qdrant.Condition
+	for _, docID := range documentIds {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: "doc_id",
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keyword{
+							Keyword: docID,
+						},
+					},
 				},
 			},
-		}
-
-		response, err := client.Scroll(ctx, request)
-		if err != nil {
-			fmt.Printf("滚动获取文档时出错: %v\n", err)
-			return "抱歉，检索文档时出现错误，请稍后再试。", nil
-		}
-
-		// 如果没有更多结果，退出循环
-		if len(response.Result) == 0 {
-			break
-		}
-
-		// 处理当前批次的文档
-		for _, point := range response.Result {
-			// 从 payload 中获取 doc_id
-			if docIDValue, ok := point.Payload["doc_id"]; ok {
-				docID := docIDValue.GetStringValue()
-				if docMap[docID] {
-					// 构建文档对象
-					content := ""
-					filename := ""
-
-					if contentValue, ok := point.Payload["page_content"]; ok {
-						content = contentValue.GetStringValue()
-					}
-					if filenameValue, ok := point.Payload["filename"]; ok {
-						filename = filenameValue.GetStringValue()
-					}
-
-					if content != "" {
-						doc := schema.Document{
-							PageContent: content,
-							Metadata: map[string]interface{}{
-								"doc_id":   docID,
-								"filename": filename,
-							},
-						}
-						filtered = append(filtered, doc)
-						fmt.Printf("找到匹配文档: ID=%s, 内容长度=%d\n", docID, len(content))
-					}
-				}
-			}
-		}
-
-		// 更新 offset 用于下一次查询
-		if len(response.Result) > 0 {
-			offset = response.Result[len(response.Result)-1].Id
-		}
+		})
 	}
 
-	// 打印调试信息
-	fmt.Printf("\n检索结果统计:\n")
-	fmt.Printf("- 找到 %d 个匹配文档\n", len(filtered))
-
-	if len(filtered) == 0 {
-		return "抱歉，在选择的文档中没有找到相关信息。", nil
+	// 构建查询
+	searchRequest := &qdrant.SearchPoints{
+		CollectionName: s.config.CollectionName,
+		Vector:         make([]float32, 3072), // 使用零向量
+		Filter: &qdrant.Filter{
+			Should: conditions, // 使用 should 来匹配任意一个文档ID
+		},
+		Limit: 100,
+		WithPayload: &qdrant.WithPayloadSelector{
+			SelectorOptions: &qdrant.WithPayloadSelector_Enable{
+				Enable: true,
+			},
+		},
 	}
+
+	fmt.Printf("执行搜索，集合：%s\n", s.config.CollectionName)
+
+	// 执行搜索
+	response, err := client.Search(ctx, searchRequest)
+	if err != nil {
+		return "", fmt.Errorf("搜索文档失败: %v", err)
+	}
+
+	fmt.Printf("搜索结果数量：%d\n", len(response.Result))
 
 	// 构建上下文
-	var context string
-	for _, doc := range filtered {
-		if name, ok := doc.Metadata["filename"].(string); ok {
-			context += fmt.Sprintf("\n【来自文档：%s】\n", name)
+	var context strings.Builder
+	var docContents = make(map[string][]string) // 用于按文档组织内容
+
+	// 首先按文档ID组织内容
+	for _, point := range response.Result {
+		docID := point.Payload["doc_id"].GetStringValue()
+		content := point.Payload["content"].GetStringValue()
+		if content != "" {
+			docContents[docID] = append(docContents[docID], content)
 		}
-		context += doc.PageContent + "\n"
+	}
+
+	// 按文档组织内容
+	for docID, contents := range docContents {
+		filename := ""
+		for _, point := range response.Result {
+			if point.Payload["doc_id"].GetStringValue() == docID {
+				filename = point.Payload["filename"].GetStringValue()
+				break
+			}
+		}
+		context.WriteString(fmt.Sprintf("\n文档《%s》内容：\n", filename))
+		for _, content := range contents {
+			context.WriteString(content)
+			context.WriteString("\n")
+		}
+		context.WriteString("\n---\n")
+	}
+
+	if context.Len() == 0 {
+		return "未找到相关文档内容。", nil
 	}
 
 	// 构建提示词
-	prompt := fmt.Sprintf(`你是一个知识库问答助手。请仔细阅读以下内容，并基于这些内容回答问题。
-如果内容中没有相关信息，请直接回复："抱歉，在当前内容中没有找到相关信息。"
-不要编造或推测任何信息，只回答内容中明确提到的信息。
+	prompt := fmt.Sprintf(`你是一个专业的知识库问答助手。请严格按照以下要求回答问题：
 
-参考内容：
+===== 文档内容开始 =====
 %s
+===== 文档内容结束 =====
 
-问题：%s
+用户问题：%s
 
-请基于上述参考内容回答这个问题。如果内容中包含答案，请详细解答；如果没有相关信息，请明确指出。`, context, question)
+严格要求：
+1. 必须以"根据文档《xxx》"开头回答
+2. 只能使用文档中明确提到的信息回答
+3. 如果文档中没有相关信息，必须回答"抱歉，在所选文档中没有找到相关信息"
+4. 不允许编造、推测或补充任何文档中未提到的信息
+5. 如果要引用多个文档，需要分别指明来源
+6. 回答要简洁准确，直接引用相关内容
 
-	// 调用 LLM 生成回答
-	llmResponse, err := s.llm.Call(ctx, prompt)
+请严格按照上述要求回答问题：`,
+		context.String(), question)
+
+	fmt.Printf("文档内容：\n%s\n", context.String())
+	fmt.Printf("提示词：\n%s\n", prompt)
+
+	fmt.Println("开始生成回答...")
+
+	// 生成回答
+	answer, err := s.llm.Call(ctx, prompt)
 	if err != nil {
-		fmt.Printf("生成回答时出错: %v\n", err)
-		return "抱歉，AI 助手暂时无法回答您的问题，请稍后再试。", nil
+		return "", fmt.Errorf("生成回答失败: %v", err)
 	}
 
-	return s.ExtractPureText(llmResponse), nil
+	fmt.Println("回答生成完成")
+	return answer, nil
 }
 
-// 添加辅助函数用于截断字符串
-func truncateString(s string, length int) string {
-	if len(s) <= length {
-		return s
+// 判断是否是普通对话
+func isGeneralConversation(question string) bool {
+	// 定义一些普通对话的关键词
+	generalPhrases := []string{
+		"你好", "hi", "hello", "嗨",
+		"介绍", "自我介绍",
+		"再见", "拜拜", "goodbye",
+		"早上好", "晚上好", "下午好",
+		"谢谢", "感谢",
 	}
-	return s[:length] + "..."
+
+	questionLower := strings.ToLower(question)
+	for _, phrase := range generalPhrases {
+		if strings.Contains(questionLower, strings.ToLower(phrase)) {
+			return true
+		}
+	}
+	return false
 }
 
-// 添加新的辅助方法
-func (s *QAService) getDocumentsFromMetadata(ctx context.Context, documentIds []string) ([]schema.Document, error) {
+// 处理普通对话
+func handleGeneralConversation(question string) string {
+	questionLower := strings.ToLower(question)
+
+	switch {
+	case strings.Contains(questionLower, "你好") ||
+		strings.Contains(questionLower, "hi") ||
+		strings.Contains(questionLower, "hello"):
+		return "你好！我是 AI 智能办公助手。我可以帮你查询和理解文档内容，请告诉我你想了解什么？"
+
+	case strings.Contains(questionLower, "介绍"):
+		return "我是一个 AI 智能办公助手，专门用于帮助用户理解和分析文档内容。你可以上传文档，然后向我提问，我会基于文档内容为你解答。需要我为你做些什么吗？"
+
+	case strings.Contains(questionLower, "再见") ||
+		strings.Contains(questionLower, "拜拜"):
+		return "再见！如果还有问题随时问我。"
+
+	case strings.Contains(questionLower, "谢谢") ||
+		strings.Contains(questionLower, "感谢"):
+		return "不用谢！很高兴能帮到你。还有其他问题吗？"
+
+	default:
+		return "你好！我是 AI 助手。我主要负责解答与文档相关的问题。你可以上传文档，然后问我任何关于文档内容的问题。请问有什么我可以帮你的吗？"
+	}
+}
+
+// StreamingQuery 处理流式查询
+func (s *QAService) StreamingQuery(ctx context.Context, question string, documentIds []string, responseChan chan<- StreamResponse) error {
+	// 检查是否是普通对话或没有选择文档
+	if isGeneralConversation(question) || len(documentIds) == 0 {
+		select {
+		case <-ctx.Done():
+		case responseChan <- StreamResponse{handleGeneralConversation(question)}:
+		}
+		return nil
+	}
+
+	fmt.Printf("开始流式查询，问题：%s，文档IDs：%v\n", question, documentIds)
+
+	// 连接到 Qdrant
 	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("连接 Qdrant 失败: %v", err)
 	}
 	defer conn.Close()
 
 	client := qdrant.NewPointsClient(conn)
-	var documents []schema.Document
 
-	for _, id := range documentIds {
-		request := &qdrant.GetPoints{
-			CollectionName: s.config.CollectionName,
-			Ids: []*qdrant.PointId{
-				{
-					PointIdOptions: &qdrant.PointId_Uuid{
-						Uuid: id,
+	// 构建查询条件
+	var conditions []*qdrant.Condition
+	for _, docID := range documentIds {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: "doc_id",
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keyword{
+							Keyword: docID,
+						},
 					},
 				},
 			},
-		}
+		})
+	}
 
-		response, err := client.Get(ctx, request)
-		if err != nil {
-			fmt.Printf("获取文档 %s 失败: %v\n", id, err)
-			continue
-		}
+	// 构建查询
+	searchRequest := &qdrant.SearchPoints{
+		CollectionName: s.config.CollectionName,
+		Vector:         make([]float32, 3072),
+		Filter: &qdrant.Filter{
+			Should: conditions,
+		},
+		Limit: 100,
+		WithPayload: &qdrant.WithPayloadSelector{
+			SelectorOptions: &qdrant.WithPayloadSelector_Enable{
+				Enable: true,
+			},
+		},
+	}
 
-		for _, point := range response.Result {
-			if point.Payload != nil {
-				content := point.Payload["content"].GetStringValue()
-				if content != "" {
-					doc := schema.Document{
-						PageContent: content,
-						Metadata: map[string]interface{}{
-							"doc_id": id,
-						},
-					}
-					documents = append(documents, doc)
-				}
-			}
+	fmt.Printf("执行流式搜索，集合：%s\n", s.config.CollectionName)
+
+	// 执行搜索
+	response, err := client.Search(ctx, searchRequest)
+	if err != nil {
+		return fmt.Errorf("搜索文档失败: %v", err)
+	}
+
+	fmt.Printf("流式搜索结果数量：%d\n", len(response.Result))
+
+	// 构建上下文
+	var context strings.Builder
+	var docContents = make(map[string][]string)
+
+	// 首先按文档ID组织内容
+	for _, point := range response.Result {
+		docID := point.Payload["doc_id"].GetStringValue()
+		content := point.Payload["content"].GetStringValue()
+		if content != "" {
+			docContents[docID] = append(docContents[docID], content)
 		}
 	}
 
-	return documents, nil
-}
-
-// StreamResponse 结构体修改
-type StreamResponse string
-
-// StreamingQuery 方法修改
-func (s *QAService) StreamingQuery(ctx context.Context, question string, documentIds []string, responseChan chan StreamResponse) error {
-	// 如果没有选择文档，使用普通对话模式
-	if len(documentIds) == 0 {
-		go func() {
-			defer close(responseChan)
-
-			prompt := fmt.Sprintf(`你是一个智能助手。请回答用户的问题。
-如果你不确定答案，请诚实地说"我不确定"或"我需要更多信息"。
-不要编造或推测任何信息。
-
-问题：%s`, question)
-
-			response, err := s.llm.Call(ctx, prompt)
-			if err != nil {
-				fmt.Printf("生成回答时出错: %v\n", err)
-				select {
-				case <-ctx.Done():
-				case responseChan <- StreamResponse("抱歉，AI 助手暂时无法回答您的问题，请稍后再试。"):
-				}
-				return
+	// 按文档组织内容
+	for docID, contents := range docContents {
+		filename := ""
+		for _, point := range response.Result {
+			if point.Payload["doc_id"].GetStringValue() == docID {
+				filename = point.Payload["filename"].GetStringValue()
+				break
 			}
+		}
+		context.WriteString(fmt.Sprintf("\n文档《%s》内容：\n", filename))
+		for _, content := range contents {
+			context.WriteString(content)
+			context.WriteString("\n")
+		}
+		context.WriteString("\n---\n")
+	}
 
-			select {
-			case <-ctx.Done():
-			case responseChan <- StreamResponse(s.ExtractPureText(response)):
-			}
-		}()
+	if context.Len() == 0 {
+		select {
+		case <-ctx.Done():
+		case responseChan <- StreamResponse{"未找到相关文档内容。"}:
+		}
 		return nil
 	}
 
-	// 以下是基于知识库的问答逻辑
-	fmt.Printf("用户选择的文档IDs: %v\n", documentIds)
+	// 构建提示词
+	prompt := fmt.Sprintf(`请基于以下文档内容回答用户问题。
 
-	go func() {
-		defer close(responseChan)
-
-		// 使用 SimilaritySearch 而不是 GetRelevantDocuments
-		allDocs, err := s.qdrant.GetStore().SimilaritySearch(ctx, question, 100)
-		if err != nil {
-			fmt.Printf("检索文档时出错: %v\n", err)
-			select {
-			case <-ctx.Done():
-			case responseChan <- StreamResponse("抱歉，检索文档时出现错误，请稍后再试。"):
-			}
-			return
-		}
-
-		// 过滤文档，只保留选中的文档
-		filtered := make([]schema.Document, 0)
-		docMap := make(map[string]bool)
-		for _, id := range documentIds {
-			docMap[id] = true
-		}
-
-		for _, doc := range allDocs {
-			docID, ok := doc.Metadata["doc_id"].(string)
-			if !ok {
-				continue
-			}
-			if docMap[docID] {
-				filtered = append(filtered, doc)
-				fmt.Printf("匹配到文档: %s, 内容长度: %d\n", docID, len(doc.PageContent))
-			}
-		}
-
-		// 打印调试信息
-		fmt.Printf("检索到 %d 个文档，过滤后剩余 %d 个文档\n", len(allDocs), len(filtered))
-
-		if len(filtered) == 0 {
-			select {
-			case <-ctx.Done():
-			case responseChan <- StreamResponse("抱歉，在选择的文档中没有找到相关信息。"):
-			}
-			return
-		}
-
-		// 构建上下文
-		var context string
-		for _, doc := range filtered {
-			if name, ok := doc.Metadata["filename"].(string); ok {
-				context += fmt.Sprintf("\n【来自文档：%s】\n", name)
-			}
-			context += doc.PageContent + "\n"
-		}
-
-		// 构建提示词
-		prompt := fmt.Sprintf(`你是一个知识库问答助手。请仔细阅读以下内容，并基于这些内容回答问题。
-如果内容中没有相关信息，请直接回复："抱歉，在当前内容中没有找到相关信息。"
-不要编造或推测任何信息，只回答内容中明确提到的信息。
-
-参考内容：
+===== 文档内容开始 =====
 %s
+===== 文档内容结束 =====
 
-问题：%s
+用户问题：%s
 
-请基于上述参考内容回答这个问题。如果内容中包含答案，请详细解答；如果没有相关信息，请明确指出。`, context, question)
+注意事项：
+1. 必须以"根据文档《xxx》，..."的格式开始回答
+2. 只能使用上述文档中的信息
+3. 如果文档中没有相关信息，请回答"抱歉，在所选文档中没有找到相关信息"
+4. 回答要简洁明了，直接引用相关内容
+5. 不要编造或推测任何文档中没有的信息
 
-		// 生成回答
-		response, err := s.llm.Call(ctx, prompt)
-		if err != nil {
-			fmt.Printf("生成回答时出错: %v\n", err)
-			select {
-			case <-ctx.Done():
-			case responseChan <- StreamResponse("抱歉，AI 助手暂时无法回答您的问题，请稍后再试。"):
-			}
-			return
-		}
+请开始回答：`,
+		context.String(), question)
 
-		select {
-		case <-ctx.Done():
-		case responseChan <- StreamResponse(s.ExtractPureText(response)):
-			fmt.Printf("已发送回答\n")
-		}
-	}()
+	fmt.Println("开始生成流式回答...")
+
+	// 生成回答
+	answer, err := s.llm.Call(ctx, prompt)
+	if err != nil {
+		return fmt.Errorf("生成回答失败: %v", err)
+	}
+
+	fmt.Println("流式回答生成完成")
+
+	select {
+	case <-ctx.Done():
+	case responseChan <- StreamResponse{answer}:
+	}
 
 	return nil
 }
 
+// ListDocuments 获取文档列表
 func (s *QAService) ListDocuments(ctx context.Context) (*models.DocumentList, error) {
-	config := &qdrant.Config{
-		Host: "localhost",
-		Port: 6333,
-	}
-
-	client, err := qdrant.NewClient(config)
+	// 连接到 Qdrant
+	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, fmt.Errorf("创建 Qdrant 客户端失败: %v", err)
+		return nil, fmt.Errorf("连接 Qdrant 失败: %v", err)
 	}
+	defer conn.Close()
 
+	client := qdrant.NewPointsClient(conn)
+
+	// 使用 Scroll API 获取所有文档
 	var limit uint32 = 100
 	request := &qdrant.ScrollPoints{
-		CollectionName: s.config.DocumentMetadataCollection,
+		CollectionName: s.config.CollectionName,
 		WithPayload: &qdrant.WithPayloadSelector{
 			SelectorOptions: &qdrant.WithPayloadSelector_Enable{
 				Enable: true,
@@ -567,22 +658,83 @@ func (s *QAService) ListDocuments(ctx context.Context) (*models.DocumentList, er
 		return nil, fmt.Errorf("获取文档列表失败: %v", err)
 	}
 
-	documents := make([]models.Document, 0)
-	// 直接使用 response 作为点的切片
-	for _, point := range response {
-		doc := models.Document{
-			ID:          point.Id.GetUuid(),
-			Name:        point.Payload["name"].GetStringValue(),
-			Type:        point.Payload["type"].GetStringValue(),
-			Size:        point.Payload["size"].GetIntegerValue(),
-			UploadTime:  time.Unix(point.Payload["upload_time"].GetIntegerValue(), 0),
-			Description: point.Payload["description"].GetStringValue(),
+	// 使用 map 来去重文档
+	docMap := make(map[string]*models.Document)
+	for _, point := range response.Result {
+		if docID := point.Payload["doc_id"].GetStringValue(); docID != "" {
+			if _, exists := docMap[docID]; !exists {
+				// 从 payload 中获取上传时间，如果没有则使用当前时间
+				var uploadTime time.Time
+				if timeStr := point.Payload["upload_time"].GetStringValue(); timeStr != "" {
+					uploadTime, _ = time.Parse(time.RFC3339, timeStr)
+				} else {
+					uploadTime = time.Now()
+				}
+
+				docMap[docID] = &models.Document{
+					ID:         docID,
+					Name:       point.Payload["filename"].GetStringValue(),
+					UploadTime: uploadTime,
+				}
+			}
 		}
-		documents = append(documents, doc)
+	}
+
+	// 转换为切片
+	docs := make([]models.Document, 0, len(docMap))
+	for _, doc := range docMap {
+		docs = append(docs, *doc)
 	}
 
 	return &models.DocumentList{
-		Documents: documents,
-		Total:     len(documents),
+		Documents: docs,
+		Total:     len(docs),
 	}, nil
+}
+
+// DeleteDocument 删除文档
+func (s *QAService) DeleteDocument(ctx context.Context, docID string) error {
+	// 连接到 Qdrant
+	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("连接 Qdrant 失败: %v", err)
+	}
+	defer conn.Close()
+
+	client := qdrant.NewPointsClient(conn)
+
+	// 构建删除条件
+	var waitTrue bool = true
+	deleteRequest := &qdrant.DeletePoints{
+		CollectionName: s.config.CollectionName,
+		Wait:           &waitTrue,
+		Points: &qdrant.PointsSelector{
+			PointsSelectorOneOf: &qdrant.PointsSelector_Filter{
+				Filter: &qdrant.Filter{
+					Must: []*qdrant.Condition{
+						{
+							ConditionOneOf: &qdrant.Condition_Field{
+								Field: &qdrant.FieldCondition{
+									Key: "doc_id",
+									Match: &qdrant.Match{
+										MatchValue: &qdrant.Match_Keyword{
+											Keyword: docID,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// 执行删除
+	_, err = client.Delete(ctx, deleteRequest)
+	if err != nil {
+		return fmt.Errorf("删除文档失败: %v", err)
+	}
+
+	return nil
 }
