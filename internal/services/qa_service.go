@@ -242,39 +242,90 @@ func (s *QAService) getRetrieverForDocuments(documentIds []string) vectorstores.
 func (s *QAService) Query(ctx context.Context, question string, documentIds []string) (string, error) {
 	fmt.Printf("用户选择的文档IDs: %v\n", documentIds)
 
-	// 获取所有文档
-	allDocs, err := s.qdrant.GetStore().SimilaritySearch(ctx, "", 1000)
+	// 创建 gRPC 连接
+	conn, err := grpc.Dial(s.config.QdrantGRPCURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		fmt.Printf("检索文档时出错: %v\n", err)
-		return "抱歉，检索文档时出现错误，请稍后再试。", nil
+		return "", fmt.Errorf("连接 Qdrant 失败: %v", err)
 	}
+	defer conn.Close()
 
-	// 过滤文档，只保留选中的文档
-	filtered := make([]schema.Document, 0)
+	client := qdrant.NewPointsClient(conn)
+
+	// 使用 Scroll API 获取所有文档
+	var limit uint32 = 100
+	var filtered []schema.Document
+	var offset *qdrant.PointId = nil
+
+	// 创建文档ID的映射，方便查找
 	docMap := make(map[string]bool)
 	for _, id := range documentIds {
 		docMap[id] = true
 	}
 
-	// 打印所有文档的元数据，用于调试
-	fmt.Println("所有文档的元数据:")
-	for _, doc := range allDocs {
-		docID, ok := doc.Metadata["doc_id"].(string)
-		if !ok {
-			fmt.Printf("文档缺少doc_id: %+v\n", doc.Metadata)
-			continue
+	for {
+		request := &qdrant.ScrollPoints{
+			CollectionName: s.config.CollectionName,
+			Limit:          &limit,
+			Offset:         offset,
+			WithPayload: &qdrant.WithPayloadSelector{
+				SelectorOptions: &qdrant.WithPayloadSelector_Enable{
+					Enable: true,
+				},
+			},
 		}
 
-		fmt.Printf("文档ID: %s, 元数据: %+v\n", docID, doc.Metadata)
+		response, err := client.Scroll(ctx, request)
+		if err != nil {
+			fmt.Printf("滚动获取文档时出错: %v\n", err)
+			return "抱歉，检索文档时出现错误，请稍后再试。", nil
+		}
 
-		if docMap[docID] {
-			filtered = append(filtered, doc)
-			fmt.Printf("匹配到文档: %s, 内容长度: %d\n", docID, len(doc.PageContent))
+		// 如果没有更多结果，退出循环
+		if len(response.Result) == 0 {
+			break
+		}
+
+		// 处理当前批次的文档
+		for _, point := range response.Result {
+			// 从 payload 中获取 doc_id
+			if docIDValue, ok := point.Payload["doc_id"]; ok {
+				docID := docIDValue.GetStringValue()
+				if docMap[docID] {
+					// 构建文档对象
+					content := ""
+					filename := ""
+
+					if contentValue, ok := point.Payload["page_content"]; ok {
+						content = contentValue.GetStringValue()
+					}
+					if filenameValue, ok := point.Payload["filename"]; ok {
+						filename = filenameValue.GetStringValue()
+					}
+
+					if content != "" {
+						doc := schema.Document{
+							PageContent: content,
+							Metadata: map[string]interface{}{
+								"doc_id":   docID,
+								"filename": filename,
+							},
+						}
+						filtered = append(filtered, doc)
+						fmt.Printf("找到匹配文档: ID=%s, 内容长度=%d\n", docID, len(content))
+					}
+				}
+			}
+		}
+
+		// 更新 offset 用于下一次查询
+		if len(response.Result) > 0 {
+			offset = response.Result[len(response.Result)-1].Id
 		}
 	}
 
 	// 打印调试信息
-	fmt.Printf("检索到 %d 个文档，过滤后剩余 %d 个文档\n", len(allDocs), len(filtered))
+	fmt.Printf("\n检索结果统计:\n")
+	fmt.Printf("- 找到 %d 个匹配文档\n", len(filtered))
 
 	if len(filtered) == 0 {
 		return "抱歉，在选择的文档中没有找到相关信息。", nil
@@ -301,13 +352,22 @@ func (s *QAService) Query(ctx context.Context, question string, documentIds []st
 
 请基于上述参考内容回答这个问题。如果内容中包含答案，请详细解答；如果没有相关信息，请明确指出。`, context, question)
 
-	response, err := s.llm.Call(ctx, prompt)
+	// 调用 LLM 生成回答
+	llmResponse, err := s.llm.Call(ctx, prompt)
 	if err != nil {
 		fmt.Printf("生成回答时出错: %v\n", err)
 		return "抱歉，AI 助手暂时无法回答您的问题，请稍后再试。", nil
 	}
 
-	return s.ExtractPureText(response), nil
+	return s.ExtractPureText(llmResponse), nil
+}
+
+// 添加辅助函数用于截断字符串
+func truncateString(s string, length int) string {
+	if len(s) <= length {
+		return s
+	}
+	return s[:length] + "..."
 }
 
 // 添加新的辅助方法
