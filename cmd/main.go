@@ -72,8 +72,8 @@ func setupRoutes(router *gin.Engine, qaHandler *handlers.QAHandler) {
 		// 问答接口
 		api.POST("/query", qaHandler.HandleQuery)
 
-		// 流式问答接口
-		api.POST("/streaming-query", qaHandler.HandleStreamingQuery)
+		// 流式问答接口 - 修改为 GET 方法
+		api.GET("/streaming-query", qaHandler.HandleStreamingQuery)
 
 		// 获取文档列表
 		api.GET("/documents", qaHandler.HandleListDocuments)

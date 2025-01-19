@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -44,24 +45,28 @@ func (h *QAHandler) HandleQuery(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"answer": answer})
 }
 
-// HandleStreamingQuery 处理流式问答请求
+// HandleStreamingQuery 处理流式查询请求
 func (h *QAHandler) HandleStreamingQuery(c *gin.Context) {
-	var request struct {
-		Question    string   `json:"question"`
-		DocumentIds []string `json:"document_ids"`
-	}
+	question := c.Query("question")
+	documentIdsStr := c.Query("document_ids")
 
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
+	var documentIds []string
+	if err := json.Unmarshal([]byte(documentIdsStr), &documentIds); err != nil {
+		c.String(http.StatusBadRequest, "无效的文档ID")
 		return
 	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Transfer-Encoding", "chunked")
 
 	responseChan := make(chan services.StreamResponse)
 	ctx := c.Request.Context()
 
 	go func() {
 		defer close(responseChan)
-		if err := h.qaService.StreamingQuery(ctx, request.Question, request.DocumentIds, responseChan); err != nil {
+		if err := h.qaService.StreamingQuery(ctx, question, documentIds, responseChan); err != nil {
 			select {
 			case <-ctx.Done():
 			case responseChan <- services.StreamResponse{Content: fmt.Sprintf("错误：%v", err)}:
@@ -69,20 +74,16 @@ func (h *QAHandler) HandleStreamingQuery(c *gin.Context) {
 		}
 	}()
 
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("Transfer-Encoding", "chunked")
-
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case <-ctx.Done():
 			return false
 		case response, ok := <-responseChan:
 			if !ok {
+				fmt.Fprintf(w, "event: complete\ndata: \n\n")
 				return false
 			}
-			c.SSEvent("message", response.Content)
+			fmt.Fprintf(w, "data: %s\n\n", response.Content)
 			return true
 		}
 	})

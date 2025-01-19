@@ -794,6 +794,34 @@
         .toast .close:hover {
             opacity: 1;
         }
+
+        /* 修改消息样式 */
+        .message-content {
+            max-width: 80%;
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        /* AI 消息气泡样式 */
+        .ai-avatar {
+            background: #10b981; /* 保持原来的头像颜色 */
+            color: white;
+        }
+
+        /* 修改 AI 消息气泡的背景色和文字颜色 */
+        .message:not(.user-message) .message-content {
+            background: #f0f7ff; /* 柔和的蓝色背景 */
+            color: #1e3a8a; /* 深蓝色文字 */
+            border: 1px solid #e5efff; /* 淡蓝色边框 */
+        }
+
+        /* 用户消息气泡样式保持不变 */
+        .user-message .message-content {
+            background: var(--primary-color);
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -917,7 +945,17 @@
     </div>
 
     <script>
-        let selectedDocuments = new Set(); // 用于存储选中的文档ID
+        // 从 localStorage 恢复选中的文档
+        const selectedDocuments = new Set(
+            JSON.parse(localStorage.getItem('selectedDocuments') || '[]')
+        );
+
+        // 保存选中的文档到 localStorage
+        function saveSelectedDocuments() {
+            localStorage.setItem('selectedDocuments', 
+                JSON.stringify(Array.from(selectedDocuments))
+            );
+        }
 
         // 上传文件
         async function uploadFile() {
@@ -963,8 +1001,14 @@
             
             const content = document.createElement('div');
             content.className = 'message-content';
-            content.innerHTML = `<p>${text}</p>`;
+            const paragraph = document.createElement('p');
             
+            if (sender === 'user') {
+                // 用户消息直接显示
+                paragraph.textContent = text;
+            }
+            
+            content.appendChild(paragraph);
             messageDiv.appendChild(avatar);
             messageDiv.appendChild(content);
             
@@ -975,6 +1019,8 @@
             
             chatBox.appendChild(messageDiv);
             chatBox.scrollTop = chatBox.scrollHeight;
+            
+            return paragraph; // 返回段落元素，用于打字机效果
         }
 
         // 切换文档选择状态
@@ -992,6 +1038,7 @@
                 fileItem.classList.add('selected');
             }
             updateSelectedDocsInfo();
+            saveSelectedDocuments(); // 保存选择状态
         }
 
         // 更新选中文档信息
@@ -1015,19 +1062,59 @@
                 appendMessage(question, 'user');
                 questionInput.value = '';
 
-                const response = await fetch('/api/query', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        question: question,
-                        document_ids: Array.from(selectedDocuments)
-                    }),
+                // 创建新的消息元素
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message';
+                
+                const avatar = document.createElement('div');
+                avatar.className = 'avatar ai-avatar';
+                avatar.innerHTML = '<span class="mdi mdi-robot"></span>';
+                
+                const content = document.createElement('div');
+                content.className = 'message-content';
+                const paragraph = document.createElement('p');
+                content.appendChild(paragraph);
+                
+                messageDiv.appendChild(avatar);
+                messageDiv.appendChild(content);
+                
+                const chatBox = document.getElementById('chatBox');
+                chatBox.appendChild(messageDiv);
+                chatBox.scrollTop = chatBox.scrollHeight;
+
+                // 打字机效果函数
+                async function typeWriter(text, element, speed = 50) {
+                    for (let i = 0; i < text.length; i++) {
+                        element.textContent += text[i];
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                        await new Promise(resolve => setTimeout(resolve, speed));
+                    }
+                }
+
+                // 创建 EventSource 连接
+                const eventSource = new EventSource(`/api/streaming-query?question=${encodeURIComponent(question)}&document_ids=${encodeURIComponent(JSON.stringify(Array.from(selectedDocuments)))}`);
+
+                eventSource.onmessage = async function(event) {
+                    try {
+                        await typeWriter(event.data, paragraph);
+                    } catch (e) {
+                        console.error('处理消息失败:', e);
+                    }
+                };
+
+                eventSource.onerror = function(error) {
+                    console.error('SSE 错误:', error);
+                    eventSource.close();
+                    if (!paragraph.textContent) {
+                        paragraph.textContent = '发送问题失败，请重试';
+                    }
+                };
+
+                // 当消息完成时关闭连接
+                eventSource.addEventListener('complete', function(e) {
+                    eventSource.close();
                 });
 
-                const data = await response.json();
-                appendMessage(data.answer, 'assistant');
             } catch (error) {
                 console.error('发送问题失败:', error);
                 appendMessage('发送问题失败，请重试', 'assistant');
@@ -1068,13 +1155,11 @@
                 
                 // 对文档按上传时间和名称排序
                 const sortedDocuments = data.documents.sort((a, b) => {
-                    // 首先按上传时间降序排序（新的在前）
                     const timeA = new Date(a.upload_time).getTime();
                     const timeB = new Date(b.upload_time).getTime();
                     if (timeA !== timeB) {
                         return timeB - timeA;
                     }
-                    // 如果时间相同，按文件名排序
                     return a.name.localeCompare(b.name);
                 });
 
@@ -1097,6 +1182,16 @@
                     </div>
                 `).join('');
                 updateSelectedDocsInfo();
+
+                // 检查并清理已不存在的文档
+                const currentDocIds = new Set(sortedDocuments.map(doc => doc.id));
+                for (const docId of selectedDocuments) {
+                    if (!currentDocIds.has(docId)) {
+                        selectedDocuments.delete(docId);
+                    }
+                }
+                saveSelectedDocuments();
+                
             } catch (error) {
                 console.error('加载文档失败:', error);
                 showToast('加载文档失败，请重试', 'error');
@@ -1123,24 +1218,18 @@
             const confirmDialog = document.getElementById('confirmDialog');
             const docId = confirmDialog.dataset.docId;
             
-            console.log('正在删除文档:', docId);
-            
             try {
-                const url = `/api/documents/${docId}`;
-                console.log('删除请求URL:', url);
-                
-                const response = await fetch(url, {
+                const response = await fetch(`/api/documents/${docId}`, {
                     method: 'DELETE',
                     headers: {
                         'Accept': 'application/json'
                     }
                 });
 
-                console.log('删除响应状态:', response.status);
-
                 if (response.ok) {
                     showToast('文档删除成功', 'success');
-                    selectedDocuments.delete(docId);
+                    selectedDocuments.delete(docId); // 从选中集合中移除
+                    saveSelectedDocuments(); // 保存更新后的选择
                     await loadDocuments();
                 } else {
                     let errorMessage = '删除文档失败';
