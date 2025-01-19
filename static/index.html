@@ -5,12 +5,23 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@6.5.95/css/materialdesignicons.min.css">
     <style>
         :root {
+            /* 亮色主题变量 */
             --primary-color: #2563eb;
             --secondary-color: #3b82f6;
             --background-color: #f8fafc;
             --border-color: #e2e8f0;
             --text-color: #1e293b;
             --success-color: #22c55e;
+        }
+
+        /* 暗色主题变量 */
+        body.dark-theme {
+            --primary-color: #1a73e8;
+            --secondary-color: #7c4dff;
+            --background-color: #000000;
+            --border-color: #1a1a1a;
+            --text-color: #ffffff;
+            --success-color: #00c853;
         }
 
         * {
@@ -27,13 +38,14 @@
         }
 
         .header {
-            background-color: white;
+            background-color: var(--background-color);
             padding: 1rem 0;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             position: fixed;
             width: 100%;
             top: 0;
             z-index: 100;
+            border-bottom: 1px solid var(--border-color);
         }
 
         .header-content {
@@ -63,10 +75,11 @@
         }
 
         .panel {
-            background: white;
+            background-color: var(--background-color);
             border-radius: 12px;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
             padding: 1.5rem;
+            border: 1px solid var(--border-color);
         }
 
         .upload-panel {
@@ -116,12 +129,13 @@
 
         .chat-box {
             flex: 1;
-            background: white;
+            background-color: var(--background-color);
             border-radius: 12px;
             padding: 1.5rem;
             margin-bottom: 1rem;
             overflow-y: auto;
             line-height: 1.8;
+            border: 1px solid var(--border-color);
         }
 
         .welcome-container {
@@ -164,6 +178,7 @@
             padding: 1rem;
             background: var(--background-color);
             border-radius: 8px;
+            border: 1px solid var(--border-color);
         }
 
         .feature-icon {
@@ -207,13 +222,15 @@
             max-width: 80%;
             padding: 0.75rem 1rem;
             border-radius: 12px;
-            background: white;
+            background-color: var(--background-color);
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
         }
 
         .user-message .message-content {
-            background: var(--primary-color);
-            color: white;
+            background-color: var(--primary-color);
+            color: #ffffff;
         }
 
         .message p {
@@ -304,10 +321,11 @@
         .input-area {
             display: flex;
             gap: 1rem;
-            background: white;
+            background-color: var(--background-color);
             padding: 1rem;
             border-radius: 12px;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            border: 1px solid var(--border-color);
         }
 
         input[type="text"] {
@@ -317,6 +335,8 @@
             border-radius: 8px;
             font-size: 1rem;
             transition: all 0.3s ease;
+            background-color: var(--background-color);
+            color: var(--text-color);
         }
 
         input[type="text"]:focus {
@@ -563,7 +583,7 @@
         }
 
         .confirm-dialog {
-            background: white;
+            background-color: var(--background-color);
             border-radius: 12px;
             padding: 1.5rem;
             width: 90%;
@@ -571,6 +591,7 @@
             transform: translateY(-20px);
             transition: all 0.3s ease;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            border: 1px solid var(--border-color);
         }
 
         .modal-overlay.active .confirm-dialog {
@@ -669,12 +690,11 @@
             margin-bottom: 0.5rem;
             cursor: pointer;
             transition: all 0.2s ease;
-            background: #fff;
+            background-color: var(--background-color);
         }
         
         .file-item:hover {
-            border-color: var(--primary-color);
-            background: white;
+            background-color: var(--secondary-color);
         }
         
         .file-item.selected {
@@ -743,7 +763,7 @@
             bottom: 2rem;
             left: 50%;
             transform: translateX(-50%) translateY(100%);
-            background: white;
+            background-color: var(--background-color);
             padding: 1rem 1.5rem;
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -755,6 +775,7 @@
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             max-width: 90%;
             width: auto;
+            border: 1px solid var(--border-color);
         }
 
         .toast.show {
@@ -795,33 +816,42 @@
             opacity: 1;
         }
 
-        /* 修改消息样式 */
-        .message-content {
-            max-width: 80%;
-            padding: 0.75rem 1rem;
-            border-radius: 12px;
-            background: white;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        /* 主题切换按钮样式 */
+        .theme-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.5rem;
+            border-radius: 50%;
+            background: var(--bg-secondary, #f0f0f0);
+            border: 1px solid var(--border-color, #ddd);
+            cursor: pointer;
+            z-index: 1000;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
         }
 
-        /* AI 消息气泡样式 */
-        .ai-avatar {
-            background: #10b981; /* 保持原来的头像颜色 */
-            color: white;
+        .theme-toggle:hover {
+            background: var(--bg-tertiary, #e5e5e5);
         }
 
-        /* 修改 AI 消息气泡的背景色和文字颜色 */
-        .message:not(.user-message) .message-content {
-            background: #f0f7ff; /* 柔和的蓝色背景 */
-            color: #1e3a8a; /* 深蓝色文字 */
-            border: 1px solid #e5efff; /* 淡蓝色边框 */
+        .theme-toggle .mdi {
+            font-size: 1.2rem;
+            color: var(--text-primary, #333);
         }
 
-        /* 用户消息气泡样式保持不变 */
-        .user-message .message-content {
-            background: var(--primary-color);
-            color: white;
-        }
+        /* 页面加载时恢复主题偏好 */
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark') {
+                document.body.classList.add('dark-theme');
+                document.querySelector('.theme-toggle .mdi').className = 'mdi mdi-weather-sunny';
+            }
+        });
     </style>
 </head>
 <body>
@@ -943,6 +973,11 @@
         <p class="message"></p>
         <span class="close mdi mdi-close" onclick="hideToast()"></span>
     </div>
+
+    <!-- 在 <body> 标签开始处添加主题切换按钮 -->
+    <button class="theme-toggle" onclick="toggleTheme()">
+        <span class="mdi mdi-weather-night"></span>
+    </button>
 
     <script>
         // 从 localStorage 恢复选中的文档
@@ -1284,6 +1319,19 @@
                 sendQuestion();
             }
         });
+
+        // 主题切换功能
+        function toggleTheme() {
+            const body = document.body;
+            const themeToggle = document.querySelector('.theme-toggle .mdi');
+            const isDark = body.classList.toggle('dark-theme');
+            
+            // 更新图标
+            themeToggle.className = isDark ? 'mdi mdi-weather-sunny' : 'mdi mdi-weather-night';
+            
+            // 保存主题偏好
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        }
     </script>
 </body>
 </html> 

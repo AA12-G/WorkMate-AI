@@ -1,0 +1,53 @@
+.dark-theme {
+    /* 背景色使用更浅的灰色 */
+    --bg-primary: #2c2c2c;      /* 主背景-浅灰色 */
+    --bg-secondary: #333333;    /* 次要背景-稍深灰色 */
+    --bg-tertiary: #383838;     /* 第三级背景-深灰色 */
+    
+    /* 文本颜色使用更高对比度 */
+    --text-primary: #ffffff;    /* 主要文本-白色 */
+    --text-secondary: #cccccc;  /* 次要文本-浅灰 */
+    --text-muted: #999999;      /* 弱化文本-中灰 */
+    
+    /* 边框和分割线使用更浅的颜色 */
+    --border-color: #404040;    /* 边框-浅灰色 */
+    --divider-color: #3a3a3a;   /* 分割线-浅灰色 */
+    
+    /* 悬停颜色使用更浅的灰色 */
+    --hover-bg: #363636;        /* 悬停背景-浅灰色 */
+    --hover-border: #484848;    /* 悬停边框-浅灰色 */
+    
+    /* 强调色使用蓝色系 */
+    --accent-primary: #3b82f6;   /* 标准蓝色 */
+    --accent-secondary: #4f8aef; /* 浅蓝色 */
+    
+    /* 状态颜色使用更柔和的色调 */
+    --success: #3fa87c;         /* 柔和的薄荷绿 */
+    --warning: #e39c4a;         /* 柔和的杏色 */
+    --error: #e35d5d;           /* 柔和的珊瑚红 */
+    --info: #5b8def;            /* 柔和的天蓝 */
+
+    /* 平滑过渡效果 */
+    transition: background-color 0.5s ease, 
+                color 0.5s ease, 
+                border-color 0.5s ease;
+}
+
+/* 全局过渡效果 */
+body {
+    transition: background-color 0.5s ease, 
+                color 0.5s ease;
+}
+
+/* 修改文件项悬停样式 */
+.dark-theme .file-item:hover {
+    background-color: var(--hover-bg);
+    border-color: var(--hover-border);
+}
+
+/* 选中状态使用柔和的边框 */
+.dark-theme .file-item.selected {
+    background-color: var(--hover-bg);
+    border-color: var(--accent-primary);
+    border-width: 1px;
+} 
